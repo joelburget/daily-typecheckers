@@ -4,7 +4,6 @@ module Day1 where
 
 import Control.Monad.Gen
 
-import Control.Applicative
 import Control.Monad (guard)
 import Data.Maybe (isNothing)
 
@@ -67,15 +66,15 @@ quote = runGen . go where
     d' <- go d
     c' <- go (c d)
     return $ Pi (CheckI d') (CheckI c')
-  go (VLam f) = Var <$> gen
+  go (VLam _) = Var <$> gen
   go _ = error "quoting a VGen"
 
 infer :: [Val] -> IExpr -> Maybe Val
-infer env (Var i) = Nothing -- open term!
+infer _ (Var _) = Nothing -- open term!
 infer env (App ie oe) =
   let v = cEval env oe
   in infer (v:env) ie
-infer env Type = Just VType
+infer _ Type = Just VType
 infer env (Pi d c) = do
   check' env d VType
   let v = cEval env d

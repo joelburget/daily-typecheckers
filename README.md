@@ -13,6 +13,7 @@
 * equality / homotopy
 * reflection
 * propagators
+* pattern matching
 
 ## Day 1
 
