@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+-- A barebones bidirectional dependent typechecker with HOAS
 module Day1 where
 
 import Control.Monad.Gen
@@ -6,19 +7,6 @@ import Control.Monad.Gen
 import Control.Applicative
 import Control.Monad (guard)
 import Data.Maybe (isNothing)
-
--- inspiration: https://github.com/AndrasKovacs/tcbe/blob/master/nosubst.md
-
--- expansion ideas:
--- * linear
--- * compilation (registers, etc)
--- * toggle HOAS / bidirectional knobs
--- * ABTs
--- * data types!
--- * effects
--- * equality / homotopy
--- * reflection
--- * propagators
 
 data IExpr
   = Var Int
