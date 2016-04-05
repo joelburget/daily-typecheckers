@@ -5,6 +5,7 @@
 module Day2 where
 
 import Control.Monad.Gen
+import Control.Monad (when)
 
 import Data.Either (isRight)
 
@@ -155,23 +156,27 @@ quoteInfer (IPi a b) = (CheckI . Pi (quote a)) <$> (quoteInfer =<< b (VVar 0))
 checkB :: Ctx -> (CExpr :<: Val) -> Bool
 checkB ctx typing = isRight (check ctx typing)
 
-  = Lam CExpr
-  | CheckI IExpr
 check :: Ctx -> (CExpr :<: Val) -> Either String ()
 check ctx (tm :<: ty) = case tm of
-  Lam exp -> case exp of
-    infer ((VVar 0 :<:  XXX
-  CheckI exp -> do
-    iTy <- infer ctx tm
+  Lam expr -> case ty of
+    VPi specDomTy codomTy ->
+      -- just check that the body returns the codomain given an input of the
+      -- domain
+      check ((VVar 0 :<: specDomTy) <: ctx) (expr :<: codomTy specDomTy)
+    _ -> Left "this lambda is not that other thing"
+  CheckI expr -> do
+    iTy <- infer ctx expr
     case (ty, iTy) of
-      (_, Ok iTy') -> iTy' == ty -- XXX not bool
-      (VPi domTy codomTy, IPi dom codom) -> do
-        check ctx (dom :<: domTy)
-        check (domTy <: ctx) (codom domTy :<: codomTy)
+      (_, Ok iTy') -> if iTy' == ty then Right () else Left "failed checking!"
+      (VPi specDomTy specCodomTy, IPi iDomTy iCodomTy) -> do
+        when (specDomTy /= iDomTy) $ Left "failed checking!"
+        _ <- iCodomTy specDomTy
+        return ()
       _ -> Left "okay, well this doesn't match at all"
 
 tests :: IO ()
 tests = do
+  let ctx = Ctx []
       -- (\x -> x :: Type -> Type) Type
   let expr1 :: IExpr
       expr1 = App
@@ -189,7 +194,7 @@ tests = do
   putStrLn ""
   putStrLn "checking:"
   putStrLn $ "check> " ++ show expr2
-  print $ checkB [] (expr2 :<: VType)
+  print $ checkB ctx (expr2 :<: VType)
 
   putStrLn ""
   putStrLn "but now with the wrong type:"
@@ -201,21 +206,20 @@ tests = do
             (CheckI (Pi (CheckI Type) (CheckI (Var 0)))))
           (CheckI (Pi (CheckI Type) (CheckI (Var 0)))))
   putStrLn $ "check> " ++ show expr3
-  print $ checkB [] (expr3 :<: VType)
+  print $ checkB ctx (expr3 :<: VType)
 
   putStrLn ""
   putStrLn "pi inference:"
-  print $ checkB [] (CheckI (Pi (CheckI Type) (CheckI (Var 0))) :<: VPi VType id)
+  print $ checkB ctx (CheckI (Pi (CheckI Type) (CheckI (Var 0))) :<: VPi VType id)
 
   putStrLn ""
   putStrLn "lit inference"
-  print $ checkB [] (CheckI Num :<: VType)
-  print $ checkB [] (CheckI (Lit 5) :<: VNum)
-  print $ checkB [VLit 5] (CheckI (Var 0) :<: VNum)
+  print $ checkB ctx (CheckI Num :<: VType)
+  print $ checkB ctx (CheckI (Lit 5) :<: VNum)
+  print $ checkB (Ctx [VLit 5 :<: VNum]) (CheckI (Var 0) :<: VNum)
 
   -- putStrLn ""
   -- putStrLn "open (failed) inference:"
   -- -- XXX not done
-  -- let ctx = Ctx [] []
   -- print $ isLeft $ infer ctx (Pi (CheckI (Var 0)) (CheckI (Var 0)))
   -- print $ isLeft $ infer ctx (Pi (CheckI Type) (CheckI (Var 1)))
