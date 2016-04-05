@@ -14,10 +14,6 @@ data IExpr
   | Type
   | Pi CExpr CExpr
   | Annot CExpr CExpr
-  -- | Num
-  -- | Lit Int
-  -- | Const String
-  -- | Free Int
   deriving (Eq, Show, Ord)
 
 data CExpr
@@ -25,16 +21,8 @@ data CExpr
   | CheckI IExpr
   deriving (Eq, Show, Ord)
 
-data VConst
-  = CAp VConst Val
-  | CVar String
-  | CFree Int
-
 data Val
   = VType
-  -- | VNum
-  -- | VLit Int
-  -- | VConst VConst
   | VPi Val (Val -> Val)
   | VLam (Val -> Val)
   -- used only by eqVal to compare HOAS terms
