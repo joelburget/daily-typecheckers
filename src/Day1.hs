@@ -17,6 +17,7 @@ import Data.Maybe (isNothing)
 -- * effects
 -- * equality / homotopy
 -- * reflection
+-- * propagators
 
 data IExpr
   = Var Int
