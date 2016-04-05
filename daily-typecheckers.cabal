@@ -1,0 +1,19 @@
+name:                daily-typecheckers
+version:             0.1.0.0
+synopsis:            I'm writing a typechecker every day
+description:         Please see README.md
+homepage:            https://github.com/githubuser/daily-typecheckers#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Joel Burget
+maintainer:          joelburget@gmail.com
+copyright:           2016 Joel Burget
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.10
+
+executable daily-typecheckers
+  hs-source-dirs:      src
+  main-is:             Main.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.7 && < 5
