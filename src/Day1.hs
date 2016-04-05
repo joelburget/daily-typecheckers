@@ -1,6 +1,7 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Day1 where
 
-import Gen
+import Control.Monad.Gen
 
 import Control.Applicative
 import Control.Monad (guard)
@@ -51,12 +52,16 @@ data Val
   -- used only by eqVal to compare HOAS terms
   | VGen Int
 
+instance Enum Val where
+  toEnum = VGen
+  fromEnum _ = error "You're a bad person."
+
 eqVal :: Val -> Val -> Bool
-eqVal l r = execGen $ go l r where
+eqVal l r = runGen $ go l r where
   go VType VType = return True
   go (VPi d c) (VPi d' c') = (&&) <$> go d d' <*> go (c d) (c' d')
   go (VLam f) (VLam g) = do
-    v <- VGen <$> gen
+    v <- gen
     go (f v) (g v)
   go (VGen i) (VGen j) = return $ i == j
   go _ _ = return False
@@ -80,7 +85,7 @@ eval :: CExpr -> Val
 eval = cEval []
 
 quote :: Val -> IExpr
-quote = execGen . go where
+quote = runGen . go where
   go VType = return Type
   go (VPi d c) = do
     d' <- go d
