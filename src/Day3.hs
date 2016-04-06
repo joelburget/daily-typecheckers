@@ -50,13 +50,12 @@ infix 4 :<:
 (<:) :: (Val :<: Type) -> Ctx -> Ctx
 x <: (Ctx xs) = Ctx (x:xs)
 
--- -- Add a neutral variable to the context
--- (<::) :: Type -> Ctx -> Ctx
--- (<::) t (Ctx vs ts) = Ctx (VVar 0:vs) (t:ts)
+-- Add a neutral variable to the context
+(<::) :: Type -> Ctx -> Ctx
+t <:: ctx = (VVar 0 :<: t) <: ctx
 
--- XXX add invariant to only ever evaluate typechecked terms
+-- TODO add invariant to only ever evaluate typechecked terms
 
--- XXX audit all uses
 extractTerms :: Ctx -> [Val]
 extractTerms (Ctx xs) = map (\(tm :<: _) -> tm) xs
 
@@ -144,12 +143,12 @@ infer ctx =
        Pi dom codom -> do
          check ctx (dom :<: VType)
          let domV = cEval vs dom
-             ctx' = (domV :<: VType) <: ctx
+             ctx' = domV <:: ctx
          check ctx' (codom :<: VType)
          ok VType
        Annot tm ty -> do
          check ctx (ty :<: VType)
-         let tyV = cEval (extractTerms ctx) ty
+         let tyV = cEval vs ty
          check ctx (tm :<: tyV)
          ok tyV
 
@@ -166,17 +165,13 @@ check ctx (tm :<: ty) = case tm of
     VPi specDomTy codomTy ->
       -- just check that the body returns the codomain given an input of the
       -- domain
-      check ((VVar 0 :<: specDomTy) <: ctx) (expr :<: codomTy specDomTy)
+      check (specDomTy <:: ctx) (expr :<: codomTy specDomTy)
     _ -> Left "this lambda is not that other thing"
   CheckI expr -> do
-    iTy <- infer ctx expr
-    case (ty, iTy) of
-      (_, Ok iTy') -> if iTy' == ty then Right () else Left "failed checking!"
-      (VPi specDomTy specCodomTy, IPi iDomTy iCodomTy) -> do
-        when (specDomTy /= iDomTy) $ Left "failed checking!"
-        _ <- iCodomTy specDomTy
-        return ()
-      _ -> Left "okay, well this doesn't match at all"
+    -- TODO I'm not a fan of quoting then evaling
+    iTy <- quoteInfer =<< infer ctx expr
+    let iTy' = cEval (extractTypes ctx) iTy
+    when (ty /= iTy') $ Left "failed checking"
 
 tests :: IO ()
 tests = do
