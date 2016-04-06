@@ -14,6 +14,8 @@
 * reflection
 * propagators
 * pattern matching
+* universe hierarchies
+* subtyping
 
 ## Day 1
 
