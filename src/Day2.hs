@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeOperators #-}
--- The same as Day1, but with data types and lits.
+-- The same as Day1, but with nat lits.
 module Day2 where
 
 import Control.Monad.Gen
