@@ -1,8 +1,8 @@
 name:                daily-typecheckers
 version:             0.1.0.0
-synopsis:            I'm writing a typechecker every day
+synopsis:            I'm writing a typechecker every day for practice
 description:         Please see README.md
-homepage:            https://github.com/githubuser/daily-typecheckers#readme
+homepage:            https://github.com/joelburget/daily-typecheckers#readme
 license:             BSD3
 license-file:        LICENSE
 author:              Joel Burget
@@ -11,10 +11,18 @@ copyright:           2016 Joel Burget
 category:            Web
 build-type:          Simple
 cabal-version:       >=1.10
+source-repository head
+  type: git
+  location: https://github.com/joelburget/daily-typecheckers
 
 executable daily-typecheckers
   hs-source-dirs:      src
   main-is:             Main.hs
   default-language:    Haskell2010
-  build-depends:       base >= 4.7 && < 5, monad-gen >= 0.3.0.0 && < 0.4
+  build-depends:
+    base >= 4.7 && < 5,
+    monad-gen >= 0.3.0.0 && < 0.4,
+    containers >= 0.5.6 && < 0.6,
+    mtl >= 2.2.1 && < 2.3,
+    either >= 4.4.0 && < 4.5
   ghc-options: -Wall
