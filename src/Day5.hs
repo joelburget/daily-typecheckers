@@ -3,9 +3,13 @@
 module Day5 where
 
 import qualified Data.Map as M
+import Data.Monoid
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Either
+
+import Text.PrettyPrint.ANSI.Leijen (Pretty(..))
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 data Name
   = Free String
@@ -25,12 +29,26 @@ type VariantDesc = [(String, Desc)]
 data FunDesc = Arrow Desc Desc
   deriving (Show, Eq)
 
+instance Pretty FunDesc where
+  pretty (Arrow domain codomain) = pretty domain <> PP.text " -> " <> pretty codomain
+
 data Desc
   = DescRecord RecordDesc
   | DescVariant VariantDesc
   | DescFun FunDesc
   | DescName Name
   deriving (Show, Eq)
+
+instance Pretty Desc where
+  -- XXX need to look up names in context!
+  pretty (DescRecord rd) = PP.vsep
+    [ PP.text "{"
+    , PP.nest 2 $ PP.vsep (map pretty rd)
+    , PP.text "}"
+    ]
+  pretty (DescVariant vd) = pretty vd
+  pretty (DescFun fd) = pretty fd
+  pretty (DescName name) = pretty name
 
 listDesc :: Desc
 listDesc = DescVariant
