@@ -1,7 +1,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE OverloadedStrings #-}
--- Day 4 + pattern matching, typechecking, elimination
-module Day5 where
+-- Day 5 + pretty printing
+module Day6 where
 
 import qualified Data.Map as M
 import Data.Monoid
