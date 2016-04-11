@@ -26,3 +26,4 @@
 | 5 | Apr 8 | Day 4 + pattern matching, typechecking, elimination |
 | 6 | Apr 9 | Day 5 + pretty printing |
 | 7 | Apr 10 | Experiment with four binder representations from [Chargueraud's locally nameless survey](http://www.chargueraud.org/research/2009/ln/main.pdf) |
+| 8 | Apr 11 | Implement locally bound operations (from Chargueraud) |
