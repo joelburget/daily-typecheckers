@@ -10,7 +10,7 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Either
 
-import Text.PrettyPrint.ANSI.Leijen (Pretty(..))
+import Text.PrettyPrint.ANSI.Leijen ()
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 data Name
@@ -19,13 +19,14 @@ data Name
   | Bound Int
   deriving (Show, Eq, Ord)
 
+-- Note: this is really a (multi-) binding form
 type RecordDesc = [
   ( String -- name
   , Desc -- what it points to
   )
   ]
 
-type Env = (M.Map Name Data, M.Map Name Desc)
+type Env = (M.Map Int Data, M.Map Int Desc)
 type EnvM = Reader Env
 
 type Printing = EitherT PP.Doc EnvM
@@ -51,31 +52,21 @@ encloseVariant = PP.encloseSep "{" "}" "|"
 prettyRecordDesc :: RecordDesc -> Printing PP.Doc
 prettyRecordDesc rs = do
   rs' <- forM rs $ \(name, desc) ->
-    -- ((", " <> PP.text name <> ": ") <>) <$> prettyDesc desc
-    ((PP.text name <> ": ") <>) <$> prettyDesc desc
+    ((PP.magenta (PP.text name) <> ": ") <>) <$> prettyDesc desc
   return $ encloseRecord rs'
-  -- return $ PP.vsep
-  --   [ PP.text "{"
-  --   , PP.indent 2 $ PP.semiBraces rs'
-  --   , PP.text "}"
-  --   ]
 
 prettyVariantDesc :: VariantDesc -> Printing PP.Doc
 prettyVariantDesc rs = do
   rs' <- forM rs $ \(name, desc) ->
-    -- (("| " <> PP.text name <> ": ") <>) <$> prettyDesc desc
-    ((PP.text name <> ": ") <>) <$> prettyDesc desc
+    ((PP.red (PP.text name) <> ": ") <>) <$> prettyDesc desc
   return $ encloseVariant rs'
-  -- return $ PP.vsep
-  --   [ PP.text "{"
-  --   , PP.indent 2 $ PP.vsep rs'
-  --   , PP.text "}"
-  --   ]
 
 runPrinter :: Printing PP.Doc -> Env -> IO ()
-runPrinter printer env =
+runPrinter printer env = do
   either PP.putDoc PP.putDoc $ runReader (runEitherT printer) env
+  putStrLn ""
 
+emptyEnv :: Env
 emptyEnv = (M.empty, M.empty)
 
 data Desc
@@ -89,9 +80,9 @@ prettyDesc :: Desc -> Printing PP.Doc
 prettyDesc (DescRecord record) = prettyRecordDesc record
 prettyDesc (DescVariant var) = prettyVariantDesc var
 prettyDesc (DescFun fun) = prettyArrow fun
-prettyDesc (DescName name) = return $ case name of
-  Free str -> PP.text str
-  Bound ix -> PP.int ix
+prettyDesc (DescName name) = case name of
+  Free name' -> return $ PP.cyan (PP.text name')
+  _ -> left "encountered an unexpected bound variable when pretty-printing"
 
 listDesc :: Desc
 listDesc = DescVariant
@@ -154,13 +145,14 @@ listData = DataVariant
 data tm :<: ty = tm :<: ty  deriving (Show, Eq)
 infix 4 :<:
 
+listCheck :: Either String Bool
 listCheck =
   let x = Free "x"
       y = Free "y"
       head = Bound 0
       tail = Bound 1
-      env = ( M.fromList [(x, DataName x), (y, DataName y)]
-            , M.fromList [(head, DescName head), (tail, DescName tail)]
+      env = ( M.fromList [(0, DataName x), (1, DataName y)]
+            , M.fromList [(0, DescName head), (1, DescName tail)]
             )
   in flip runReader env $
      runEitherT $
@@ -173,15 +165,15 @@ type Check = EitherT String EnvM
 hoistMaybe :: Monad m => s -> Maybe a -> EitherT s m a
 hoistMaybe msg = maybe (left msg) right
 
-resolveTmName :: IsString s => Name -> EitherT s EnvM Data
-resolveTmName name = do
+resolveTmName :: IsString s => Int -> EitherT s EnvM Data
+resolveTmName ix = do
   (boundData, _) <- ask
-  hoistMaybe "failed type name resolution" $ M.lookup name boundData
+  hoistMaybe "failed type name resolution" $ M.lookup ix boundData
 
-resolveTyName :: IsString s => Name -> EitherT s EnvM Desc
-resolveTyName name = do
+resolveTyName :: IsString s => Int -> EitherT s EnvM Desc
+resolveTyName ix = do
   (_, boundDesc) <- ask
-  hoistMaybe "failed type name resolution" $ M.lookup name boundDesc
+  hoistMaybe "failed type name resolution" $ M.lookup ix boundDesc
 
 --
 
@@ -219,12 +211,18 @@ check (DataFun (Fun match result) :<: DescFun (Arrow dom codom)) =
   check (result :<: codom)
 
 -- just resolve the name and move on
-check (DataName name :<: ty) = do
-  tm <- resolveTmName name
-  check (tm :<: ty)
-check (tm :<: DescName name) = do
-  ty <- resolveTyName name
-  check (tm :<: ty)
+check (DataName name :<: ty) = case name of
+  -- XXX I think this is totally wrong
+  -- * Names should be free at this point
+  Free name' -> left "we don't support unquantified names in data"
+  Bound ix -> do
+    tm <- resolveTmName ix
+    check (tm :<: ty)
+check (tm :<: DescName name) = case name of
+  Free name' -> left "we don't support unquantified names in descriptions"
+  Bound ix -> do
+    ty <- resolveTyName ix
+    check (tm :<: ty)
 
 check _ = return False
 
