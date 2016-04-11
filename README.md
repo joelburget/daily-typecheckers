@@ -17,7 +17,7 @@
 * universe hierarchies
 * subtyping
 
-| Day | Date | Summary |
+| Day | Calendar Date | Summary |
 | :-- | :--- | :------ |
 | 1 | Apr 5 | inspiration: https://github.com/AndrasKovacs/tcbe/blob/master/nosubst.md |
 | 2 | Apr 6 | Was going to get data types working, but just made it to nat lits. This day turned out to be mostly about exploring the representation from the article linked in Day 1. |
