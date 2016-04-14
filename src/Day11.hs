@@ -13,6 +13,7 @@ data Type
   = Function Type Type
   | RecordT [(String, Type)]
   | VariantT [(String, Type)]
+  deriving Eq
 
 
 data Term
@@ -79,7 +80,7 @@ close' k t x = case t of
   Case varTm cases -> Case (close' k varTm x) (map (\(name, tm) -> (name, close' k tm x)) cases)
 
 type Ctx = [Type]
-type InCtx = Reader Ctx
+type InCtx = EitherT String (Reader Ctx)
 
 infer :: Term -> InCtx Type
 infer t = case t of
@@ -89,5 +90,30 @@ infer t = case t of
     t1Ty <- infer t1
     withReader (t1Ty:) (infer t2)
 
-  -- bleh how to type the variable
-  Abs t' ->
+  -- XXX - bleh how to type the variable
+  Abs t' -> undefined
+  App t1 t2 -> do
+    t1Ty <- infer t1
+    t2Ty <- infer t2
+
+    Function domain codomain <- t1Ty
+    assert (domain == t2Ty)
+    return t2Ty
+
+  Record fields -> do
+    fieldTys <- mapM (\(name, tm) -> (name,) <$> infer tm) fields
+    return (Record fieldTys)
+  AccessField recTm name kTm ->
+    recTmTy <- infer recTm
+    withReader (recTmTy:) (infer kTm)
+
+  -- XXX bleh need subtyping here since we can only determine specific variant
+  -- this inhabits
+  Variant name t' -> do
+    t'Ty <- infer t'
+    return (VariantT [(name, t'Ty)]
+  Case varTm cases -> do
+    varTmTy <- infer varTm
+    caseTys <- withReader (varTmTy:) $
+      mapM (\(_, tm) -> infer tm) cases
+    -- XXX assert they all unify
