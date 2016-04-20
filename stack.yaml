@@ -7,6 +7,13 @@ resolver: lts-5.11
 # Local packages, usually specified by relative directory name
 packages:
 - '.'
+- location:
+    git: https://github.com/ekmett/propagators
+    commit: c6dcc3ca117d4d821387d062b769c9db4e48afb6
+- location:
+    git: https://github.com/ekmett/unique
+    commit: 4bc46f3cb82cb8dd9f4045837e2c513c91174e17
+
 # Packages to be pulled from upstream that are not in the resolver (e.g., acme-missiles-0.3)
 extra-deps:
 - monad-gen-0.3.0.1

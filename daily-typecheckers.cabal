@@ -25,5 +25,7 @@ executable daily-typecheckers
     containers >= 0.5.6 && < 0.6,
     mtl >= 2.2.1 && < 2.3,
     either >= 4.4.0 && < 4.5,
-    ansi-wl-pprint >= 0.6.7 && < 0.7
+    ansi-wl-pprint >= 0.6.7 && < 0.7,
+    propagators,
+    transformers
   ghc-options: -Wall
