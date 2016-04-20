@@ -9,11 +9,11 @@ import Data.Propagator.Cell
 
 -- All terms carry a type, annot does so explicitly.
 data Term a
-  = BVar Type Int
-  | FVar Type String
-  | Abs Type a
-  | App Type a a
-  | Annot {- explicit -} Type a
+  = BVar Int
+  | FVar String
+  | Abs a
+  | App a a
+  | Annot Type a
   -- | Type
   deriving (Show, Eq, Functor)
 
@@ -23,43 +23,46 @@ data Type
   -- | Type
   deriving (Show, Eq)
 
-pattern BVarT ty i = TotalTerm (BVar ty i)
-pattern FVarT ty s = TotalTerm (FVar ty s)
-pattern AbsT ty t = TotalTerm (Abs ty t)
-pattern AppT ty t1 t2 = TotalTerm (App ty t1 t2)
+pattern BVarT i = TotalTerm (BVar i)
+pattern FVarT s = TotalTerm (FVar s)
+pattern AbsT t = TotalTerm (Abs t)
+pattern AppT t1 t2 = TotalTerm (App t1 t2)
 pattern AnnotT ty tm = TotalTerm (Annot ty tm)
 
-pattern BVarP ty i = PartialTerm (BVar ty i)
-pattern FVarP ty s = PartialTerm (FVar ty s)
-pattern AbsP ty t = PartialTerm (Abs ty t)
-pattern AppP ty t1 t2 = PartialTerm (App ty t1 t2)
+pattern BVarP i = PartialTerm (BVar i)
+pattern FVarP s = PartialTerm (FVar s)
+pattern AbsP t = PartialTerm (Abs t)
+pattern AppP t1 t2 = PartialTerm (App t1 t2)
 pattern AnnotP ty tm = PartialTerm (Annot ty tm)
 
+pattern BVarTP ty i = TypedPartialTerm (ty, BVar i)
+pattern FVarTP ty s = TypedPartialTerm (ty, FVar s)
+pattern AbsTP ty t = TypedPartialTerm (ty, Abs t)
+pattern AppTP ty t1 t2 = TypedPartialTerm (ty, App t1 t2)
+-- pattern AnnotTP ty tm = TypedPartialTerm (ty, Annot ty tm)
+
 -- also for total terms?
-pTmTy :: PartialTerm -> Type
-pTmTy (BVarP ty _) = ty
-pTmTy (FVarP ty _) = ty
-pTmTy (AbsP ty _) = ty
-pTmTy (AppP ty _ _) = ty
-pTmTy (AnnotP ty _) = ty
+pTmTy :: TypedPartialTerm -> Type
+pTmTy (TypedPartialTerm (ty, _)) = ty
 
 newtype PartialTerm = PartialTerm (Term (Maybe PartialTerm)) deriving (Show, Eq)
 newtype TotalTerm = TotalTerm (Term TotalTerm) deriving (Show, Eq)
+newtype TypedPartialTerm = TypedPartialTerm (Type, Term (Maybe PartialTerm)) deriving (Show, Eq)
 
 tToP :: TotalTerm -> PartialTerm
 tToP (TotalTerm t) =
   let f = Just . tToP
   in PartialTerm $ case t of
-       BVar ty i -> BVar ty i
-       FVar ty x -> FVar ty x
-       Abs ty t' -> Abs ty (f t')
-       App ty t1 t2 -> App ty (f t1) (f t2)
+       BVar i -> BVar i
+       FVar x -> FVar x
+       Abs t' -> Abs (f t')
+       App t1 t2 -> App (f t1) (f t2)
        Annot ty tm -> Annot ty (f tm)
        -- Type -> Type
 
 typecheck
   :: forall s.
-     Cell s PartialTerm
+     Cell s TypedPartialTerm
   -> Cell s Type
   -> Cell s Bool
   -> ST s ()
@@ -82,6 +85,7 @@ instance (Propagated a, Propagated b, Propagated c) => Propagated (a, b, c) wher
   merge (a, b, c) (d, e, f) = (,,) <$> merge a d <*> merge b e <*> merge c f
 
 instance Propagated PartialTerm where
+  -- TODO use patterns?
   merge px@(PartialTerm x) (PartialTerm y) = case (x, y) of
     (BVar i, BVar j)
       | i == j -> Change False px
