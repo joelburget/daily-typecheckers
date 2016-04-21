@@ -6,26 +6,51 @@ import Data.Maybe (isJust)
 import Data.Propagator
 import Data.Propagator.Cell
 
+-- util
+
+-- this starts to get expensive!
+watch3 :: Cell s a -> Cell s b -> -> Cell s c -> (a -> b -> c -> ST s ()) -> ST s ()
+watch3 x y z f = do
+  watch2 x y $ \a b -> with z $ \c -> f a b c
+  watch2 x z $ \a c -> with y $ \b -> f a b c
+  watch2 y z $ \b c -> with x $ \a -> f a b c
+
+lift3 :: (a -> b -> c) -> Cell s a -> Cell s b -> Cell s c -> ST s ()
+lift3 f x y z = watch3 x y z $ \a b c -> write z (f a b c)
+
 -- let's start with a simple two-level stratification
 
 -- XXX can't store cells in a cell!
 data Term s
   = BVar Int
   | FVar String
-  | Abs (TermCell s)
-  | App (TermCell s) (TermCell s)
-  | Annot (TypeCell s) (TermCell s)
+  | Abs Term
+  | App Term Term
+  -- | Annot (TypeCell s) (TermCell s)
   -- | Type
 
--- All terms carry a type, annot does so explicitly.
-newtype TermCell s = TermCell (Cell s (TypeCell s, Term s))
+bVar :: Cell s Int -> Cell s Type -> Cell s Term
+bVar = lift2 BVar
+
+fVar :: Cell s String -> Cell s Type -> Cell s Term
+fVar = lift2 FVar
+
+abs :: Cell s Term -> Cell s Type -> Cell s Term
+abs = lift2 Abs
+
+app :: Cell s Term -> Cell s Term -> Cell s Type -> Cell s Term
+app = lift3 App
 
 data Type s
   = TyFVar String
   | TyApp (TypeCell s) (TypeCell s)
   -- | Type
 
-newtype TypeCell s = TypeCell (Cell s (Type s))
+tyFVar :: Cell s String -> Cell s Type
+tyFVar = undefined
+
+tyApp :: Cell s Type -> Cell s Type -> Cell s Type
+tyApp = undefined
 
 -- just check whether term's TypeCell merges with the given TypeCell
 typecheck
