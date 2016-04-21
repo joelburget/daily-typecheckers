@@ -1,4 +1,4 @@
-module Day12 where
+module Day13 where
 
 -- http://benl.ouroborus.net/papers/lambda-dsim/lambda-dsim-20160328.pdf
 
@@ -8,6 +8,7 @@ data Term
   = Var String
   | Lam [(String, Term)] String Term
   | App Term Term
+  deriving Eq
 
 instance Show Term where
   show (Var name) = name
@@ -33,25 +34,32 @@ instance Show Term where
           _ -> "(" ++ show tm2 ++ ")"
     in unwords [show tm1, tm2str]
 
--- Joel: this is the opposite of what I would expect
 value :: Term -> Bool
-value (Lam _ _ _) = True
+value (Lam _ _ _) = True -- ValueAbs
 value _ = False
 
 done :: Term -> Bool
-done (Var _) = True
+done (Var _) = True -- DoneVar
 done (App e1 _)
-  | done e1 && not (value e1) = True
+  | done e1 && not (value e1) = True -- DoneApp
 done e
-  | value e = True
+  | value e = True -- DoneValue
 done _ = False
 
 reduce :: Term -> Term
--- EsReduce
-reduce (App (Lam substs name e1) e2)
-  | done e2 = subst ((name, e2):substs) e1
-reduce (App e1 e2)
-  | value e1
+reduce (App (Lam substs x e1) e2)
+  -- EsReduce
+  | done e2 = reduce $ subst ((x, e2):substs) e1
+reduce tm@(App e1 e2)
+  -- EsAppRight
+  | value e1 = reduce $ App e1 (reduce e2)
+  -- EsAppLeft
+  | otherwise =
+      let app' = App (reduce e1) (reduce e2)
+      in if tm == app' then app' else reduce app'
+  -- I'd love to do this without the Eq constraint on Term but I can't figure
+  -- out how without comparing for equality here!
+  -- | not (done e1) = reduce $ App (reduce e1) e2
 reduce t = t
 
 subst :: [(String, Term)] -> Term -> Term
@@ -88,5 +96,6 @@ main = do
         (App (Var "add")
              (App (Var "succ") (Var "y")))
         (Var "five")
+  print ex1
   print (reduce ex1)
   print (reduce ex1expected)
