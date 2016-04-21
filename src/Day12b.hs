@@ -7,60 +7,98 @@ import Data.Maybe (isJust)
 import Data.Propagator
 import Data.Propagator.Cell
 
--- util
-
--- this starts to get expensive!
-watch3 :: Cell s a
-       -> Cell s b
-       -> Cell s c
-       -> (a -> b -> c -> ST s ())
-       -> ST s ()
-watch3 x y z f = do
-  watch2 x y $ \a b -> with z $ \c -> f a b c
-  watch2 x z $ \a c -> with y $ \b -> f a b c
-  watch2 y z $ \b c -> with x $ \a -> f a b c
-
-lift3 :: (a -> b -> c -> d)
-      -> Cell s a
-      -> Cell s b
-      -> Cell s c
-      -> Cell s d
-      -> ST s ()
-lift3 f x y z w = watch3 x y z $ \a b c -> write w (f a b c)
-
 -- let's start with a simple two-level stratification
 
 -- XXX can't store cells in a cell!
 data Term
-  = BVar Int
-  | FVar String
-  | Abs Term
-  | App Term Term
+  = BVar Int (Maybe Type)
+  | FVar String (Maybe Type)
+  | Abs (Maybe Term) (Maybe Type)
+  | App (Maybe Term) (Maybe Term) (Maybe Type)
   -- | Annot (TypeCell s) (TermCell s)
   -- | Type
 
-bVar :: Cell s Int -> Cell s Type -> Cell s Term
-bVar = lift2 BVar
+bVar :: Cell s Int -> Cell s Type -> Cell s Term -> ST s ()
+bVar iCell tyCell cell = do
+  watch iCell $ \iVal ->
+    with tyCell $ \tyVal ->
+      write cell (BVar iVal (Just tyVal))
+  watch tyCell $ \tyVal ->
+    with iCell $ \iVal ->
+      write cell (BVar iVal (Just tyVal))
+  watch cell $ \(BVar iVal mTyVal) -> do
+    write iCell iVal
+    maybe (return ()) (write tyCell) mTyVal
 
-fVar :: Cell s String -> Cell s Type -> Cell s Term
-fVar = lift2 FVar
+fVar :: Cell s String -> Cell s Type -> Cell s Term -> ST s ()
+fVar sCell tyCell cell = do
+  watch sCell $ \sVal ->
+    with tyCell $ \tyVal ->
+      write cell (FVar sVal (Just tyVal))
+  watch tyCell $ \tyVal ->
+    with sCell $ \sVal ->
+      write cell (FVar sVal (Just tyVal))
+  watch cell $ \(FVar sVal mTyVal) -> do
+    write sCell sVal
+    maybe (return ()) (write tyCell) mTyVal
 
-abs :: Cell s Term -> Cell s Type -> Cell s Term
-abs = lift2 Abs
+abs :: Cell s Term -> Cell s Type -> Cell s Term -> ST s ()
+abs tmCell tyCell cell = do
+  watch tmCell $ \tmVal ->
+    with tyCell $ \tyVal ->
+      write cell (Abs (Just tmVal) (Just tyVal))
+  watch tyCell $ \tyVal ->
+    with tmCell $ \tmVal ->
+      write cell (Abs (Just tmVal) (Just tyVal))
+  watch cell $ \(Abs mTmVal mTyVal) -> do
+    maybe (return ()) (write tmCell) mTmVal
+    maybe (return ()) (write tyCell) mTyVal
 
-app :: Cell s Term -> Cell s Term -> Cell s Type -> Cell s Term
-app = lift3 App
+app :: Cell s Term -> Cell s Term -> Cell s Type -> Cell s Term -> ST s ()
+app t1Cell t2Cell tyCell cell = do
+  watch t1Cell $ \t1Val ->
+    with t2Cell $ \t2Val ->
+      with tyCell $ \tyVal ->
+        write cell (App (Just t1Val) (Just t2Val) (Just tyVal))
+  watch t2Cell $ \t2Val ->
+    with t1Cell $ \t1Val ->
+      with tyCell $ \tyVal ->
+        write cell (App (Just t1Val) (Just t2Val) (Just tyVal))
+
+  watch tyCell $ \tyVal ->
+    with t1Cell $ \t1Val ->
+      with t2Cell $ \t2Val ->
+        write cell (App (Just t1Val) (Just t2Val) (Just tyVal))
+
+  watch cell $ \(App mT1Val mT2Val mTyVal) -> do
+    maybe (return ()) (write t1Cell) mT1Val
+    maybe (return ()) (write t2Cell) mT2Val
+    maybe (return ()) (write tyCell) mTyVal
 
 data Type
   = TyFVar String
-  | TyApp Type Type
+  | TyApp (Maybe Type) (Maybe Type)
   -- | Type
 
-tyFVar :: Cell s String -> Cell s Type
-tyFVar = undefined
+tyFVar :: Cell s String -> Cell s Type -> ST s ()
+tyFVar sCell cell = do
+  watch sCell $ \sVal ->
+    write cell (TyFVar sVal)
+  watch cell $ \(TyFVar sVal) ->
+    write sCell sVal
 
-tyApp :: Cell s Type -> Cell s Type -> Cell s Type
-tyApp = undefined
+
+tyApp :: Cell s Type -> Cell s Type -> Cell s Type -> ST s ()
+tyApp t1Cell t2Cell cell = do
+  watch t1Cell $ \t1Val ->
+    with t2Cell $ \t2Val ->
+      write cell (TyApp (Just t1Val) (Just t2Val))
+  watch t2Cell $ \t2Val ->
+    with t1Cell $ \t1Val ->
+      write cell (TyApp (Just t1Val) (Just t2Val))
+  watch cell $ \(TyApp mT1Val mT2Val) -> do
+    maybe (return ()) (write t1Cell) mT1Val
+    maybe (return ()) (write t2Cell) mT2Val
 
 -- just check whether term's TypeCell merges with the given TypeCell
 typecheck :: forall s. Cell s (Term, Type)
