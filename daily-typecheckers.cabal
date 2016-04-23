@@ -27,5 +27,6 @@ executable daily-typecheckers
     either >= 4.4.0 && < 4.5,
     ansi-wl-pprint >= 0.6.7 && < 0.7,
     propagators,
-    transformers
+    transformers,
+    lens
   ghc-options: -Wall
