@@ -3,9 +3,12 @@
 module Day12b where
 
 import Control.Lens (Lens')
+import Control.Monad
 import Control.Monad.ST
 import Data.Propagator
 import Data.Propagator.Cell
+
+import Debug.Trace
 
 -- let's start with a simple two-level stratification
 
@@ -113,7 +116,7 @@ data Type
 instance Propagated Type where
   merge (TyFVar s1) (TyFVar s2) =
     TyFVar <$> merge s1 s2
-  merge (TyApp t11 t12) (TyApp t21 t22) =
+  merge (TyApp t11 t12) (TyApp t21 t22) = trace "here" $
     TyApp <$> merge t11 t21 <*> merge t12 t22
   merge _ _ = Contradiction mempty "type merge"
 
@@ -137,22 +140,33 @@ tyApp t1Cell t2Cell c = do
     maybe (return ()) (write t1Cell) mT1Val
     maybe (return ()) (write t2Cell) mT2Val
 
+withCell :: Propagated a => (Cell s a -> ST s ()) -> ST s (Cell s a)
+withCell f = do
+  x <- cell
+  f x
+  return x
+
+withCell' :: Propagated a => (Cell s a -> ST s (ST s ())) -> ST s (Cell s a)
+withCell' f = withCell (join . f)
+
 main :: IO ()
-main =
+main = do
   -- we want this typechecking to fail
   print $ runST $ do
-    a <- cell
-    b <- cell
-    app <- cell
-    x <- cell
-    a' <- cell
-
-    _ <- tyFVar <$> known "a" <*> pure a
-    _ <- tyFVar <$> known "b" <*> pure b
-    _ <- tyApp a b app
-    _ <- fVar <$> known "x" <*> pure app <*> pure x
-    _ <- tyFVar <$> known "a" <*> pure a'
+    a <- withCell' $ \a -> tyFVar <$> known "a" <*> pure a
+    a' <- withCell' $ \a' -> tyFVar <$> known "a" <*> pure a'
 
     unify a a'
 
     (,) <$> content a <*> content a'
+
+  print $ runST $ do
+    [c1, c2] <- replicateM 2 cell
+    a <- withCell' $ \a -> tyFVar <$> known "a" <*> pure a
+    b <- withCell' $ \b -> tyFVar <$> known "b" <*> pure b
+
+    x <- withCell $ \x -> tyApp a c1 x
+    y <- withCell $ \y -> tyApp c2 b y
+
+    unify x y
+    (,) <$> content x <*> content y
