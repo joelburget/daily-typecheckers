@@ -1,21 +1,21 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 module Day12b where
 
-import Control.Lens (Lens')
+import Control.Lens
 import Control.Monad
 import Control.Monad.ST
 import Data.Propagator
 import Data.Propagator.Cell
 
-import Debug.Trace
-
 -- let's start with a simple two-level stratification
 
 -- XXX can't store cells in a cell!
 data Term
-  = BVar Int (Maybe Type)
-  | FVar String (Maybe Type)
+  = BVar (Maybe Int) (Maybe Type)
+  | FVar (Maybe String) (Maybe Type)
   | Abs (Maybe Term) (Maybe Type)
   | App (Maybe Term) (Maybe Term) (Maybe Type)
   -- | Annot (Maybe Term) (Maybe Type)
@@ -49,63 +49,44 @@ termTy f tm = case tm of
   Abs body ty -> Abs body <$> f ty
   App t1 t2 ty -> App t1 t2 <$> f ty
 
+-- | Write only when the cell is not @Nothing@.
+write' :: Maybe a -> Cell s a -> ST s ()
+write' val cell = maybe (return ()) (write cell) val
 
-bVar :: Cell s Int -> Cell s Type -> Cell s Term -> ST s ()
-bVar iCell tyCell c = do
-  watch iCell $ \iVal ->
-    with tyCell $ \tyVal ->
-      write c (BVar iVal (Just tyVal))
-  watch tyCell $ \tyVal ->
-    with iCell $ \iVal ->
-      write c (BVar iVal (Just tyVal))
-  watch c $ \(BVar iVal mTyVal) -> do
-    write iCell iVal
-    maybe (return ()) (write tyCell) mTyVal
+bVar :: Cell s Int -> Cell s Type -> ST s (Cell s Term)
+bVar iCell tyCell = withCell $ \c -> do
+  watch iCell $ \iVal -> write c (BVar (Just iVal) Nothing)
+  watch tyCell $ \tyVal -> write c (BVar Nothing (Just tyVal))
+  watch c $ \(BVar iVal tyVal) -> do
+    write' iVal iCell
+    write' tyVal tyCell
 
-fVar :: Cell s String -> Cell s Type -> Cell s Term -> ST s ()
-fVar sCell tyCell c = do
-  watch sCell $ \sVal ->
-    with tyCell $ \tyVal ->
-      write c (FVar sVal (Just tyVal))
-  watch tyCell $ \tyVal ->
-    with sCell $ \sVal ->
-      write c (FVar sVal (Just tyVal))
-  watch c $ \(FVar sVal mTyVal) -> do
-    write sCell sVal
-    maybe (return ()) (write tyCell) mTyVal
+fVar :: Cell s String -> Cell s Type -> ST s (Cell s Term)
+fVar sCell tyCell = withCell $ \c -> do
+  watch sCell $ \sVal -> write c (FVar (Just sVal) Nothing)
+  watch tyCell $ \tyVal -> write c (FVar Nothing (Just tyVal))
+  watch c $ \(FVar sVal tyVal) -> do
+    write' sVal sCell
+    write' tyVal tyCell
 
-abs :: Cell s Term -> Cell s Type -> Cell s Term -> ST s ()
-abs tmCell tyCell c = do
-  watch tmCell $ \tmVal ->
-    with tyCell $ \tyVal ->
-      write c (Abs (Just tmVal) (Just tyVal))
-  watch tyCell $ \tyVal ->
-    with tmCell $ \tmVal ->
-      write c (Abs (Just tmVal) (Just tyVal))
-  watch c $ \(Abs mTmVal mTyVal) -> do
-    maybe (return ()) (write tmCell) mTmVal
-    maybe (return ()) (write tyCell) mTyVal
+abs :: Cell s Term -> Cell s Type -> ST s (Cell s Term)
+abs tmCell tyCell = withCell $ \c -> do
+  watch tmCell $ \tmVal -> write c (Abs (Just tmVal) Nothing)
+  watch tyCell $ \tyVal -> write c (Abs Nothing (Just tyVal))
+  watch c $ \(Abs tmVal tyVal) -> do
+    write' tmVal tmCell
+    write' tyVal tyCell
 
-app :: Cell s Term -> Cell s Term -> Cell s Type -> Cell s Term -> ST s ()
-app t1Cell t2Cell tyCell c = do
-  watch t1Cell $ \t1Val ->
-    with t2Cell $ \t2Val ->
-      with tyCell $ \tyVal ->
-        write c (App (Just t1Val) (Just t2Val) (Just tyVal))
-  watch t2Cell $ \t2Val ->
-    with t1Cell $ \t1Val ->
-      with tyCell $ \tyVal ->
-        write c (App (Just t1Val) (Just t2Val) (Just tyVal))
+app :: Cell s Term -> Cell s Term -> Cell s Type -> ST s (Cell s Term)
+app t1Cell t2Cell tyCell = withCell $ \c -> do
+  watch t1Cell $ \t1Val -> write c (App (Just t1Val) Nothing Nothing)
+  watch t2Cell $ \t2Val -> write c (App Nothing (Just t2Val) Nothing)
+  watch tyCell $ \tyVal -> write c (App Nothing Nothing (Just tyVal))
 
-  watch tyCell $ \tyVal ->
-    with t1Cell $ \t1Val ->
-      with t2Cell $ \t2Val ->
-        write c (App (Just t1Val) (Just t2Val) (Just tyVal))
-
-  watch c $ \(App mT1Val mT2Val mTyVal) -> do
-    maybe (return ()) (write t1Cell) mT1Val
-    maybe (return ()) (write t2Cell) mT2Val
-    maybe (return ()) (write tyCell) mTyVal
+  watch c $ \(App t1Val t2Val tyVal) -> do
+    write' tyVal tyCell
+    write' t1Val t1Cell
+    write' t2Val t2Cell
 
 data Type
   = TyFVar String
@@ -113,32 +94,45 @@ data Type
   -- | Type
   deriving Show
 
+_TyApp1 :: Prism' Type Type
+_TyApp1 = prism'
+  (\x -> TyApp (Just x) Nothing)
+  (\(TyApp x _) -> x)
+
+_TyApp2 :: Prism' Type Type
+_TyApp2 = prism'
+  (\x -> TyApp Nothing (Just x))
+  (\(TyApp _ x) -> x)
+
 instance Propagated Type where
   merge (TyFVar s1) (TyFVar s2) =
     TyFVar <$> merge s1 s2
-  merge (TyApp t11 t12) (TyApp t21 t22) = trace "here" $
+  merge (TyApp t11 t12) (TyApp t21 t22) =
     TyApp <$> merge t11 t21 <*> merge t12 t22
   merge _ _ = Contradiction mempty "type merge"
 
-tyFVar :: Cell s String -> Cell s Type -> ST s ()
-tyFVar sCell c = do
-  watch sCell $ \sVal ->
-    write c (TyFVar sVal)
-  watch c $ \(TyFVar sVal) ->
-    write sCell sVal
+tyFVar :: Cell s String -> ST s (Cell s Type)
+tyFVar sCell = withCell $ \c -> do
+  watch sCell $ \sVal -> write c (TyFVar sVal)
+  watch c $ \(TyFVar sVal) -> write sCell sVal
 
+tyApp' :: Cell s Type -> Cell s Type -> ST s (Cell s Type)
+tyApp' t1Cell t2Cell = withCell $ \c -> do
+  link' c _TyApp1 t1Cell
+  link' c _TyApp2 t2Cell
 
-tyApp :: Cell s Type -> Cell s Type -> Cell s Type -> ST s ()
-tyApp t1Cell t2Cell c = do
-  watch t1Cell $ \t1Val ->
-    with t2Cell $ \t2Val ->
-      write c (TyApp (Just t1Val) (Just t2Val))
-  watch t2Cell $ \t2Val ->
-    with t1Cell $ \t1Val ->
-      write c (TyApp (Just t1Val) (Just t2Val))
-  watch c $ \(TyApp mT1Val mT2Val) -> do
-    maybe (return ()) (write t1Cell) mT1Val
-    maybe (return ()) (write t2Cell) mT2Val
+link' :: Cell s a -> Prism' a b -> Cell s b -> ST s ()
+link' outer prism inner = do
+  watch outer $ \outerVal -> write' (outerVal ^? prism) inner
+  watch inner $ \innerVal -> write outer (innerVal ^. re prism)
+
+tyApp :: Cell s Type -> Cell s Type -> ST s (Cell s Type)
+tyApp t1Cell t2Cell = withCell $ \c -> do
+  watch t1Cell $ \t1Val -> write c (TyApp (Just t1Val) Nothing)
+  watch t2Cell $ \t2Val -> write c (TyApp Nothing (Just t2Val))
+  watch c $ \(TyApp t1Val t2Val) -> do
+    write' t1Val t1Cell
+    write' t2Val t2Cell
 
 withCell :: Propagated a => (Cell s a -> ST s ()) -> ST s (Cell s a)
 withCell f = do
@@ -151,10 +145,9 @@ withCell' f = withCell (join . f)
 
 main :: IO ()
 main = do
-  -- we want this typechecking to fail
   print $ runST $ do
-    a <- withCell' $ \a -> tyFVar <$> known "a" <*> pure a
-    a' <- withCell' $ \a' -> tyFVar <$> known "a" <*> pure a'
+    a <- join $ tyFVar <$> known "a"
+    a' <- join $ tyFVar <$> known "a"
 
     unify a a'
 
@@ -162,11 +155,11 @@ main = do
 
   print $ runST $ do
     [c1, c2] <- replicateM 2 cell
-    a <- withCell' $ \a -> tyFVar <$> known "a" <*> pure a
-    b <- withCell' $ \b -> tyFVar <$> known "b" <*> pure b
+    a <- join $ tyFVar <$> known "a"
+    b <- join $ tyFVar <$> known "b"
 
-    x <- withCell $ \x -> tyApp a c1 x
-    y <- withCell $ \y -> tyApp c2 b y
+    x <- tyApp' a c1
+    y <- tyApp' c2 b
 
     unify x y
     (,) <$> content x <*> content y
