@@ -2,9 +2,11 @@
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Day12b where
 
 import Control.Lens
+import Control.Lens.TH
 import Control.Monad
 import Control.Monad.ST
 import Data.Propagator
@@ -12,13 +14,11 @@ import Data.Propagator.Cell
 
 -- let's start with a simple two-level stratification
 
--- XXX can't store cells in a cell!
 data Term
   = BVar (Maybe Int) (Maybe Type)
   | FVar (Maybe String) (Maybe Type)
   | Abs (Maybe Term) (Maybe Type)
   | App (Maybe Term) (Maybe Term) (Maybe Type)
-  -- | Annot (Maybe Term) (Maybe Type)
   -- | Type
   deriving Show
 
@@ -52,6 +52,12 @@ termTy f tm = case tm of
 -- | Write only when the cell is not @Nothing@.
 write' :: Maybe a -> Cell s a -> ST s ()
 write' val cell = maybe (return ()) (write cell) val
+
+withCell :: Propagated a => (Cell s a -> ST s ()) -> ST s (Cell s a)
+withCell f = do
+  x <- cell
+  f x
+  return x
 
 bVar :: Cell s Int -> Cell s Type -> ST s (Cell s Term)
 bVar iCell tyCell = withCell $ \c -> do
@@ -89,20 +95,18 @@ app t1Cell t2Cell tyCell = withCell $ \c -> do
     write' t2Val t2Cell
 
 data Type
-  = TyFVar String
-  | TyApp (Maybe Type) (Maybe Type)
+  = TyFVar { _ts :: Maybe String }
+  | TyApp { _t1 :: Maybe Type, _t2 :: Maybe Type }
   -- | Type
   deriving Show
+makeLenses ''Type
 
-_TyApp1 :: Prism' Type Type
-_TyApp1 = prism'
-  (\x -> TyApp (Just x) Nothing)
-  (\(TyApp x _) -> x)
+tsP :: Prism' Type String
+tsP = prism' (TyFVar . Just) _ts
 
-_TyApp2 :: Prism' Type Type
-_TyApp2 = prism'
-  (\x -> TyApp Nothing (Just x))
-  (\(TyApp _ x) -> x)
+t1P, t2P :: Prism' Type Type
+t1P = prism' (\x -> TyApp (Just x) Nothing) (^?!t1)
+t2P = prism' (\x -> TyApp Nothing (Just x)) (^?!t2)
 
 instance Propagated Type where
   merge (TyFVar s1) (TyFVar s2) =
@@ -112,36 +116,17 @@ instance Propagated Type where
   merge _ _ = Contradiction mempty "type merge"
 
 tyFVar :: Cell s String -> ST s (Cell s Type)
-tyFVar sCell = withCell $ \c -> do
-  watch sCell $ \sVal -> write c (TyFVar sVal)
-  watch c $ \(TyFVar sVal) -> write sCell sVal
+tyFVar sCell = withCell $ \c -> link' c tsP sCell
 
-tyApp' :: Cell s Type -> Cell s Type -> ST s (Cell s Type)
-tyApp' t1Cell t2Cell = withCell $ \c -> do
-  link' c _TyApp1 t1Cell
-  link' c _TyApp2 t2Cell
+tyApp :: Cell s Type -> Cell s Type -> ST s (Cell s Type)
+tyApp t1Cell t2Cell = withCell $ \c -> do
+  link' c t1P t1Cell
+  link' c t2P t2Cell
 
 link' :: Cell s a -> Prism' a b -> Cell s b -> ST s ()
 link' outer prism inner = do
   watch outer $ \outerVal -> write' (outerVal ^? prism) inner
   watch inner $ \innerVal -> write outer (innerVal ^. re prism)
-
-tyApp :: Cell s Type -> Cell s Type -> ST s (Cell s Type)
-tyApp t1Cell t2Cell = withCell $ \c -> do
-  watch t1Cell $ \t1Val -> write c (TyApp (Just t1Val) Nothing)
-  watch t2Cell $ \t2Val -> write c (TyApp Nothing (Just t2Val))
-  watch c $ \(TyApp t1Val t2Val) -> do
-    write' t1Val t1Cell
-    write' t2Val t2Cell
-
-withCell :: Propagated a => (Cell s a -> ST s ()) -> ST s (Cell s a)
-withCell f = do
-  x <- cell
-  f x
-  return x
-
-withCell' :: Propagated a => (Cell s a -> ST s (ST s ())) -> ST s (Cell s a)
-withCell' f = withCell (join . f)
 
 main :: IO ()
 main = do
@@ -158,8 +143,8 @@ main = do
     a <- join $ tyFVar <$> known "a"
     b <- join $ tyFVar <$> known "b"
 
-    x <- tyApp' a c1
-    y <- tyApp' c2 b
+    x <- tyApp a c1
+    y <- tyApp c2 b
 
     unify x y
     (,) <$> content x <*> content y
