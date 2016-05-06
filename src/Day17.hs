@@ -16,40 +16,77 @@ data Type
 
 
 data CheckTerm
-  = Let InferTerm Type CheckTerm
+  -- neither a constructor nor change of direction
+  = Let InferTerm Type (InferTerm -> CheckTerm)
+
+  -- | Fresh
+
+  -- switch direction (check -> infer)
   | Neutral InferTerm
 
   -- constructors
-  | Abs CheckTerm
+  -- \x -> CheckedTerm
+  | Abs (CheckTerm -> CheckTerm)
   | Record [(String, CheckTerm)]
   | Variant String CheckTerm
-  deriving Show
 
 
 data InferTerm
-  = BVar Int
-  | FVar String Type
-  | Annot CheckTerm Type
+  -- switch direction (infer -> check)
+  = Annot CheckTerm Type
 
   -- eliminators
   --
   -- note that eliminators always take an InferTerm as the inspected term,
   -- since that's the neutral position, then CheckTerms for the rest
   | App InferTerm CheckTerm
-  | AccessField InferTerm String Type CheckTerm
-  | Case InferTerm Type [(String, CheckTerm)]
-  deriving Show
+  | AccessField InferTerm String Type
+  | Case InferTerm Type [(String, CheckTerm -> CheckTerm)]
+
+xxx = error "not yet implemented"
+
+eval :: InferTerm -> EvalCtx CheckTerm
+eval t = case t of
+  Annot cTerm _ -> return cTerm
+  App f x -> do
+    f' <- eval f
+    case f' of
+      Neutral _ -> xxx
+      Abs f'' -> return $ f'' x
+  AccessField iTm name _ -> do
+    evaled <- eval iTm
+    case evaled of
+      Neutral _ -> return $ Neutral (AccessField xxx xxx xxx)
+      Record fields -> case Map.lookup name (Map.fromList fields) of
+        Just field -> return field
+        Nothing -> left "didn't find field in record"
+      _ -> left "unexpected"
+
+  Case iTm _ branches -> do
+    evaled <- eval iTm
+    case evaled of
+      Neutral _ -> xxx
+      Variant name cTm -> case Map.lookup name (Map.fromList branches) of
+        Just branch -> return $ branch evaled
+
+-- evalC :: CheckTerm -> EvalCtx CheckTerm
+-- evalC t = case t of
+--   Let iTm _ body -> return $ body iTm
+--   Neutral _ -> return t
+--   Abs body ->
+--   -- Record [(String, CheckTerm)]
+--   -- Variant String CheckTerm
 
 
-type Ctx = [Type]
-type InCtx = EitherT String (Reader Ctx)
+type EvalCtx = EitherT String (Reader [CheckTerm])
+type CheckCtx = EitherT String (Reader [Type])
 
-runChecker :: InCtx () -> Maybe String
+runChecker :: CheckCtx () -> Maybe String
 runChecker calc = case runReader (runEitherT calc) [] of
   Right () -> Nothing
   Left str -> Just str
 
-unifyTy :: Type -> Type -> InCtx Type
+unifyTy :: Type -> Type -> CheckCtx Type
 unifyTy (Function dom1 codom1) (Function dom2 codom2) =
   Function <$> unifyTy dom1 dom2 <*> unifyTy codom1 codom2
 unifyTy (RecordT lTy) (RecordT rTy) = do
@@ -75,17 +112,23 @@ unifyTy (VariantT lTy) (VariantT rTy) = do
   return $ VariantT (Map.toList result)
 unifyTy l r = left ("failed unification " ++ show (l, r))
 
-check :: CheckTerm -> Type -> InCtx ()
+check :: CheckTerm -> Type -> CheckCtx ()
 check tm ty = case tm of
-  -- t1: infered, t2: checked
-  Let t1 ty' t2 -> do
+  -- t1: infered, t2: infer -> check
+  Let t1 ty' body -> do
     t1Ty <- infer t1
     _ <- unifyTy t1Ty ty'
-    local (ty':) (check t2 ty)
+    let bodyVal = body t1
+    check bodyVal ty
+
+  Neutral iTm -> do
+    iTy <- infer iTm
+    unifyTy ty iTy
+    return ()
 
   Abs t' -> do
     let Function domain codomain = ty
-    local (domain:) $ check t' codomain
+    check t' codomain
 
   Record fields -> do
     -- Record [(String, CheckTerm)]
@@ -121,10 +164,8 @@ check tm ty = case tm of
     return ()
 
 
-infer :: InferTerm -> InCtx Type
+infer :: InferTerm -> CheckCtx Type
 infer t = case t of
-  BVar i -> (!! i) <$> ask
-  FVar _ ty -> pure ty
   Annot _ ty -> pure ty
 
   App t1 t2 -> do
@@ -183,7 +224,7 @@ main = do
 
   -- boring
   print $ runChecker $
-    let tm = Abs (Neutral (BVar 0))
+    let tm = Abs (\x -> Neutral x)
         ty = Function unitTy unitTy
     in check tm ty
 
@@ -192,8 +233,8 @@ main = do
     let tm = Let
           (Annot xy xyTy)
           xyTy
-          (Neutral
-            (AccessField (BVar 0) "x" unitTy (Neutral (BVar 0)))
+          (\x -> Neutral
+            (AccessField x "x" unitTy (Neutral x))
           )
     in check tm unitTy
 
@@ -203,8 +244,8 @@ main = do
         tm = Let
           (Annot xy xRecTy)
           xRecTy
-          (Neutral
-            (AccessField (BVar 0) "x" unitTy (Neutral (BVar 0)))
+          (\x -> Neutral
+            (AccessField x "x" unitTy (Neutral x))
           )
     in check tm unitTy
 
@@ -217,11 +258,11 @@ main = do
         tm = Let
           (Annot (Variant "left" unit) eitherTy)
           eitherTy
-          (Neutral
-            (Case (BVar 0) unitTy
-              [ ("left", (Neutral (BVar 0)))
-              , ("right", (Neutral (BVar 0)))
+          (Abs (\x -> Neutral
+            (Case x unitTy
+              [ ("left", (Neutral x))
+              , ("right", (Neutral x))
               ]
             )
-          )
+          ))
     in check tm unitTy
