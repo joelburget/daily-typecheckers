@@ -5,8 +5,6 @@ module Day17 where
 
 import Control.Monad.Reader
 import Control.Monad.Trans.Either
--- import Data.Set (Set)
--- import qualified Data.Set as Set
 import qualified Data.Map as Map
 
 
@@ -21,7 +19,7 @@ data CheckTerm
   = Let InferTerm Type CheckTerm
   | Neutral InferTerm
 
-  -- "constructors"
+  -- constructors
   | Abs CheckTerm
   | Record [(String, CheckTerm)]
   | Variant String CheckTerm
@@ -34,6 +32,9 @@ data InferTerm
   | Annot CheckTerm Type
 
   -- eliminators
+  --
+  -- note that eliminators always take an InferTerm as the inspected term,
+  -- since that's the neutral position, then CheckTerms for the rest
   | App InferTerm CheckTerm
   | AccessField InferTerm String Type CheckTerm
   | Case InferTerm Type [(String, CheckTerm)]
