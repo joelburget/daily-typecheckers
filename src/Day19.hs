@@ -1,7 +1,6 @@
 -- Reflection, reification, evalation, normalization
 module Day19 where
 
-import Control.Arrow (right)
 import Control.Monad.Reader
 import Control.Monad.Gen
 import qualified Data.Map as Map
@@ -11,6 +10,8 @@ data Hoas
   = HLam String (Hoas -> Hoas)
   | HApp Hoas Hoas
   | HBase String
+
+  | HGen Int
 
 -- An easily written nominal syntax
 data Nom
@@ -49,19 +50,19 @@ reflect' t = case t of
   NBase str -> return $ HBase str
 
 reify :: Hoas -> Nom
-reify t = runGen (runReaderT (reify' (Right t)) Map.empty)
+reify t = runGen (runReaderT (reify' t) Map.empty)
 
-reify' :: Either Int Hoas -> ReaderT (Map.Map Int Nom) (Gen Int) Nom
+reify' :: Hoas -> ReaderT (Map.Map Int Nom) (Gen Int) Nom
 reify' t = case t of
-  Left ident -> (Map.! ident) <$> ask
-  Right t' -> case t' of
-    HLam name f -> do
-      ident <- gen
-      nom <- local (Map.insert ident (NVar name)) $
-        reify' $ (right f) (Left ident)
-      return $ NLam name nom
-    HApp t1 t2 -> NApp <$> reify' (Right t1) <*> reify' (Right t2)
-    HBase str -> return $ NBase str
+  HGen ident -> (Map.! ident) <$> ask
+  -- f :: Hoas -> Hoas
+  HLam name f -> do
+    ident <- gen
+    nom <- local (Map.insert ident (NVar name)) $
+      reify' (f (HGen ident))
+    return $ NLam name nom
+  HApp t1 t2 -> NApp <$> reify' t1 <*> reify' t2
+  HBase str -> return $ NBase str
 
 normalize :: Nom -> Nom
 normalize = reify . eval . reflect
