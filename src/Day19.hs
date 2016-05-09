@@ -11,6 +11,7 @@ data Hoas
   | HApp Hoas Hoas
   | HBase String
 
+  -- exotic
   | HGen Int
 
 -- An easily written nominal syntax

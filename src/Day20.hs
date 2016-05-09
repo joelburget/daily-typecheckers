@@ -1,26 +1,43 @@
-{-# LANGUAGE TupleSections #-}
 module Day20 where
+{-# LANGUAGE TupleSections #-}
 
 -- Improvements to Day18
 
-import Control.Monad (when, forM)
-import Control.Arrow (right)
 import Control.Monad.Gen
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Either hiding (right)
+import Control.Monad.Trans.Either
 import Control.Monad.Reader
 import qualified Data.Map as Map
 
 
 data Type
-  = Function Type Type
-  | RecordT [(String, Type)]
-  | VariantT [(String, Type)]
+  = Function Type Type        -- a -> b
+  | RecordT [(String, Type)]  -- a * b
+  | VariantT [(String, Type)] -- a + b
   deriving (Eq, Show)
 
 
+-- t2 = { x: 10, y: 20 } : { x : Int, y : Int }
+-- t3 = { x: 10, y: 20, z: 30 } : { x : Int, y : Int, z : Int }
+
+-- f : { x : Int } -> Int
+-- f tuple = tuple.x
+
+-- f t3
+
+
+-- eitherIS = { left : Int | right : String }
+
+-- x = left 5 : eitherIS
+
+-- Note: In a bidirectional HOAS, functions always take a checked term to
+-- checked term. Why? Because we want to take in and return canonical values
+-- (which are possibly neutral), not computations.
+
+-- Canonical values
 data CheckTerm
-  -- neither a constructor nor change of direction
+  -- Neither a constructor nor change of direction.
+  --
+  -- The type is the return type.
   = Let String InferTerm Type (CheckTerm -> CheckTerm)
 
   -- switch direction (infer -> check)
@@ -28,13 +45,15 @@ data CheckTerm
 
   -- constructors
   -- \x -> CheckedTerm
-  | Abs (CheckTerm -> CheckTerm)
+  | Abs String (CheckTerm -> CheckTerm)
   | Record [(String, CheckTerm)]
   | Variant String CheckTerm
 
+-- Computations
 data InferTerm
   -- switch direction (check -> infer)
   = Annot CheckTerm Type
+  | InferGen Int
 
   -- eliminators
   --
@@ -54,34 +73,48 @@ data NCheckTerm
   deriving Show
 
 data NInferTerm
-  = NVar String Type
+  = NVar String
   | NAnnot NCheckTerm Type
   | NApp NInferTerm NCheckTerm
   | NAccessField NInferTerm String
   | NCase NInferTerm Type [(String, NCheckTerm)]
   deriving Show
 
-cReify :: Either Int CheckTerm -> ReaderT (Map.Map Int NInferTerm) (Gen Int) NCheckTerm
-cReify t = case t of
-  Left ident -> (NNeutral . (Map.! ident)) <$> ask
-  Right t' -> case t' of
-    Let name iTm ty f -> do
-      iTm' <- iReify (Right iTm)
-      ident <- gen
-      nom <- local (Map.insert ident (NVar name ty)) $
-        cReify $ (right f) (Left ident)
-      return $ NLet name iTm' ty nom
-    Neutral iTm -> NNeutral <$> iReify (Right iTm)
-    Abs f -> do
-      ident <- gen
-      nom <- local (Map.insert ident (NVar name _ty)) $
-        cReify $ (right f) (Left ident)
-      return $ NAbs name nom
-
-iReify :: Either Int InferTerm -> ReaderT (Map.Map Int NInferTerm) (Gen Int) NInferTerm
+iReify :: InferTerm -> ReaderT (Map.Map Int (NInferTerm, Type)) (Gen Int) NInferTerm
 iReify t = case t of
-  Left ident -> (Map.! ident) <$> ask
-  Right t' -> undefined
+  InferGen ident -> fst . (Map.! ident) <$> ask
+  Annot cTm ty -> NAnnot <$> cReify cTm <*> pure ty
+  App t1 t2 -> NApp <$> iReify t1 <*> cReify t2
+  AccessField subTm name -> NAccessField <$> iReify subTm <*> pure name
+  Case iTm ty branches -> do
+    iTm' <- iReify iTm
+    let iTmTy = undefined
+    branches' <- (`Map.traverseWithKey` Map.fromList branches) $ \name f -> do
+      ident <- gen
+      -- XXX we can't easily infer iTmTy here
+      local (Map.insert ident (NVar name, iTmTy)) $
+        cReify (f (Neutral (InferGen ident)))
+    return $ NCase iTm' ty (Map.toList branches')
+
+cReify :: CheckTerm -> ReaderT (Map.Map Int (NInferTerm, Type)) (Gen Int) NCheckTerm
+cReify t = case t of
+  Let name iTm ty f -> do
+    iTm' <- iReify iTm
+    ident <- gen
+    nom <- local (Map.insert ident (NVar name, ty)) $
+      cReify (f (Neutral (InferGen ident)))
+    return $ NLet name iTm' ty nom
+  Neutral iTm -> NNeutral <$> iReify iTm
+  Abs name f -> do
+    ident <- gen
+    let varTy = undefined
+    nom <- local (Map.insert ident (NVar name, varTy)) $
+      cReify (f (Neutral (InferGen ident)))
+    return $ NAbs name nom
+  Record fields -> do
+    fields' <- Map.toList <$> traverse cReify (Map.fromList fields)
+    return $ NRecord fields'
+  Variant tag content -> NVariant tag <$> cReify content
 
 reflect :: NCheckTerm -> CheckTerm
 reflect t = runReader (cReflect t) Map.empty
@@ -96,17 +129,20 @@ cReflect nTm = case nTm of
   NNeutral iTm -> Neutral <$> iReflect iTm
   NAbs name cTm -> do
     table <- ask
-    return $ Abs $ \arg -> runReader (cReflect cTm) (Map.insert name arg table)
+    return $ Abs name $ \arg ->
+      runReader (cReflect cTm) (Map.insert name arg table)
 
   NRecord fields -> do
-    table <- ask
     fields' <- Map.toList <$> traverse cReflect (Map.fromList fields)
     return $ Record fields'
   NVariant str cTm -> Variant str <$> cReflect cTm
 
 iReflect :: NInferTerm -> Reader (Map.Map String CheckTerm) InferTerm
 iReflect nTm = case nTm of
-  NVar name ty -> Annot <$> reader (Map.! name) <*> pure ty
+  NVar name -> do
+    let ty = undefined
+    cTm <- reader (Map.! name)
+    return $ Annot cTm ty
   NAnnot cTm ty -> Annot <$> cReflect cTm <*> pure ty
   NApp iTm cTm -> App <$> iReflect iTm <*> cReflect cTm
   NAccessField iTm name -> AccessField <$> iReflect iTm <*> pure name
@@ -119,7 +155,7 @@ iReflect nTm = case nTm of
     return $ Case iTm' ty (Map.toList cases')
 
 reify :: CheckTerm -> NCheckTerm
-reify t = runGen (runReaderT (cReify (Right t)) Map.empty)
+reify t = runGen (runReaderT (cReify t) Map.empty)
 
 type EvalCtx = Either String
 type CheckCtx = EitherT String (Gen Int)
@@ -127,11 +163,15 @@ type CheckCtx = EitherT String (Gen Int)
 eval :: InferTerm -> EvalCtx CheckTerm
 eval t = case t of
   Annot cTerm _ -> return cTerm
+  InferGen _ -> Left "invariant violation: found InferGen in evaluation"
+
   App f x -> do
     f' <- eval f
-    return $ case f' of
-      Neutral f'' -> Neutral (App f'' x)
-      Abs f'' -> f'' x
+    case f' of
+      Neutral f'' -> return $ Neutral (App f'' x)
+      Abs _ f'' -> return $ f'' x
+      _ -> Left "invariant violation: eval found non-Neutral / Abs in function position"
+
   AccessField iTm name -> do
     evaled <- eval iTm
     case evaled of
@@ -146,7 +186,9 @@ eval t = case t of
     case evaled of
       Neutral nTm -> return $ Neutral (Case nTm ty branches)
       Variant name cTm -> case Map.lookup name (Map.fromList branches) of
-        Just branch -> return $ branch evaled
+        Just branch -> return $ branch cTm
+        Nothing -> Left "invariant violation: evaluation didn't find matching variant in case"
+      _ -> Left "invariant violation: evalutaion found non neutral - variant in case"
 
 runChecker :: CheckCtx () -> String
 runChecker calc = case runGen (runEitherT calc) of
@@ -179,62 +221,58 @@ unifyTy (VariantT lTy) (VariantT rTy) = do
   return $ VariantT (Map.toList result)
 unifyTy l r = left ("failed unification " ++ show (l, r))
 
-check :: Either Int CheckTerm -> Type -> CheckCtx ()
+check :: CheckTerm -> Type -> CheckCtx ()
 check eTm ty = case eTm of
-  Left ident -> undefined
-    -- Gen _ ty' -> do
-    --   _ <- unifyTy ty ty'
-    --   return ()
+  -- t1: infered, t2: infer -> check
+  Let _name t1 ty' body -> do
+    t1Ty <- infer t1
+    _ <- unifyTy t1Ty ty'
+    let bodyVal = body (Neutral t1)
+    check bodyVal ty
 
-  Right tm ->
-    -- t1: infered, t2: infer -> check
-    Let _name t1 ty' body -> do
-      t1Ty <- infer t1
-      _ <- unifyTy t1Ty ty'
-      let bodyVal = body (Neutral t1)
-      check bodyVal ty
+  Neutral iTm -> do
+    iTy <- infer iTm
+    _ <- unifyTy ty iTy
+    return ()
 
-    Neutral iTm -> do
-      iTy <- infer iTm
-      _ <- unifyTy ty iTy
-      return ()
+  Abs _ body -> do
+    let Function domain codomain = ty
+    v <- InferGen <$> lift gen
+    let evaled = body (Neutral (Annot (Neutral v) domain))
+    check evaled codomain
 
-    Abs t' -> do
-      let Function domain codomain = ty
-      v <- Left <$> lift gen <*> pure domain
-      let evaled = t' v
-      check evaled codomain
-
-    Record fields -> do
-      -- Record [(String, CheckTerm)]
-      --
-      -- Here we define our notion of record subtyping -- we check that the
-      -- record we've been given has at least the fields expected of it and of
-      -- the right type.
-      let fieldMap = Map.fromList fields
-      case ty of
-        RecordT fieldTys -> mapM_
-          (\(name, subTy) -> case Map.lookup name fieldMap of
-            Just subTm -> check subTm subTy
-            Nothing -> left "failed to find required field in record"
-          )
-          fieldTys
-        _ -> left "failed to check a record against a non-record type"
-
-    -- Variant String CheckTerm
+  Record fields -> do
+    -- Record [(String, CheckTerm)]
     --
-    -- Here we define our notion of variant subtyping -- we check that the
-    -- variant we've been given is in the row
-    Variant name t' -> case ty of
-      VariantT fieldTys -> case Map.lookup name (Map.fromList fieldTys) of
-        Just expectedTy -> check t' expectedTy
-        Nothing -> left "failed to find required field in record"
+    -- Here we define our notion of record subtyping -- we check that the
+    -- record we've been given has at least the fields expected of it and of
+    -- the right type.
+    let fieldMap = Map.fromList fields
+    case ty of
+      RecordT fieldTys -> mapM_
+        (\(name, subTy) -> case Map.lookup name fieldMap of
+          Just subTm -> check subTm subTy
+          Nothing -> left "failed to find required field in record"
+        )
+        fieldTys
       _ -> left "failed to check a record against a non-record type"
+
+  -- Variant String CheckTerm
+  --
+  -- Here we define our notion of variant subtyping -- we check that the
+  -- variant we've been given is in the row
+  Variant name t' -> case ty of
+    VariantT fieldTys -> case Map.lookup name (Map.fromList fieldTys) of
+      Just expectedTy -> check t' expectedTy
+      Nothing -> left "failed to find required field in record"
+    _ -> left "failed to check a record against a non-record type"
 
 
 infer :: InferTerm -> CheckCtx Type
 infer t = case t of
   Annot _ ty -> pure ty
+
+  InferGen _ -> left "invariant violation: infer found InferGen"
 
   App t1 t2 -> do
     Function domain codomain <- infer t1
@@ -274,9 +312,8 @@ infer t = case t of
 
         mapM_
           (\(_name, branchTy, rhs) -> do
-            -- XXX
-            v <- Left <$> lift gen <*> pure branchTy
-            check (rhs (Left v)) ty
+            v <- InferGen <$> lift gen
+            check (rhs (Neutral (Annot (Neutral v) branchTy))) ty
           )
           mergedMap
       _ -> left "found non-variant in case"
@@ -298,7 +335,7 @@ main = do
 
   -- boring
   print $ runChecker $
-    let tm = Abs (\x -> x)
+    let tm = Abs "id" (\x -> x)
         ty = Function unitTy unitTy
     in check tm ty
 
