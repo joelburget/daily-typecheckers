@@ -42,8 +42,8 @@ reflect' :: Nom -> Reader (Map.Map String Hoas) Hoas
 reflect' t = case t of
   NLam name body -> do
     table <- ask
-    return $ HLam name $ \subst ->
-      runReader (reflect' body) (Map.insert name subst table)
+    return $ HLam name $ \arg ->
+      runReader (reflect' body) (Map.insert name arg table)
   NApp t1 t2 -> HApp <$> reflect' t1 <*> reflect' t2
   NVar name -> reader (Map.! name)
   NBase str -> return $ HBase str
