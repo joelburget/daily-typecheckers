@@ -53,7 +53,10 @@ data CheckTerm
 data InferTerm
   -- switch direction (check -> infer)
   = Annot CheckTerm Type
-  | InferGen Int
+
+  -- Used in both reification and typechecking.
+  -- We don't use the type during reification, but do during checking.
+  | Unique Int (Maybe Type)
 
   -- eliminators
   --
@@ -80,42 +83,8 @@ data NInferTerm
   | NCase NInferTerm Type [(String, NCheckTerm)]
   deriving Show
 
-iReify :: InferTerm -> ReaderT (Map.Map Int (NInferTerm, Type)) (Gen Int) NInferTerm
-iReify t = case t of
-  InferGen ident -> fst . (Map.! ident) <$> ask
-  Annot cTm ty -> NAnnot <$> cReify cTm <*> pure ty
-  App t1 t2 -> NApp <$> iReify t1 <*> cReify t2
-  AccessField subTm name -> NAccessField <$> iReify subTm <*> pure name
-  Case iTm ty branches -> do
-    iTm' <- iReify iTm
-    let iTmTy = undefined
-    branches' <- (`Map.traverseWithKey` Map.fromList branches) $ \name f -> do
-      ident <- gen
-      -- XXX we can't easily infer iTmTy here
-      local (Map.insert ident (NVar name, iTmTy)) $
-        cReify (f (Neutral (InferGen ident)))
-    return $ NCase iTm' ty (Map.toList branches')
 
-cReify :: CheckTerm -> ReaderT (Map.Map Int (NInferTerm, Type)) (Gen Int) NCheckTerm
-cReify t = case t of
-  Let name iTm ty f -> do
-    iTm' <- iReify iTm
-    ident <- gen
-    nom <- local (Map.insert ident (NVar name, ty)) $
-      cReify (f (Neutral (InferGen ident)))
-    return $ NLet name iTm' ty nom
-  Neutral iTm -> NNeutral <$> iReify iTm
-  Abs name f -> do
-    ident <- gen
-    let varTy = undefined
-    nom <- local (Map.insert ident (NVar name, varTy)) $
-      cReify (f (Neutral (InferGen ident)))
-    return $ NAbs name nom
-  Record fields -> do
-    fields' <- Map.toList <$> traverse cReify (Map.fromList fields)
-    return $ NRecord fields'
-  Variant tag content -> NVariant tag <$> cReify content
-
+-- In reflection we use a map reader to look up bound variables by name
 reflect :: NCheckTerm -> CheckTerm
 reflect t = runReader (cReflect t) Map.empty
 
@@ -154,8 +123,43 @@ iReflect nTm = case nTm of
         runReader (cReflect cTm) (Map.insert name cTmArg table)
     return $ Case iTm' ty (Map.toList cases')
 
+
+-- In reification we use a map reader to look up temporarily named variables
 reify :: CheckTerm -> NCheckTerm
 reify t = runGen (runReaderT (cReify t) Map.empty)
+
+iReify :: InferTerm -> ReaderT (Map.Map Int NInferTerm) (Gen Int) NInferTerm
+iReify t = case t of
+  Unique ident _ -> (Map.! ident) <$> ask
+  Annot cTm ty -> NAnnot <$> cReify cTm <*> pure ty
+  App t1 t2 -> NApp <$> iReify t1 <*> cReify t2
+  AccessField subTm name -> NAccessField <$> iReify subTm <*> pure name
+  Case iTm ty branches -> do
+    iTm' <- iReify iTm
+    branches' <- (`Map.traverseWithKey` Map.fromList branches) $ \name f -> do
+      ident <- gen
+      local (Map.insert ident (NVar name)) $
+        cReify (f (Neutral (Unique ident Nothing)))
+    return $ NCase iTm' ty (Map.toList branches')
+
+cReify :: CheckTerm -> ReaderT (Map.Map Int NInferTerm) (Gen Int) NCheckTerm
+cReify t = case t of
+  Let name iTm ty f -> do
+    iTm' <- iReify iTm
+    ident <- gen
+    nom <- local (Map.insert ident (NVar name)) $
+      cReify (f (Neutral (Unique ident Nothing)))
+    return $ NLet name iTm' ty nom
+  Neutral iTm -> NNeutral <$> iReify iTm
+  Abs name f -> do
+    ident <- gen
+    nom <- local (Map.insert ident (NVar name)) $
+      cReify (f (Neutral (Unique ident Nothing)))
+    return $ NAbs name nom
+  Record fields -> do
+    fields' <- Map.toList <$> traverse cReify (Map.fromList fields)
+    return $ NRecord fields'
+  Variant tag content -> NVariant tag <$> cReify content
 
 type EvalCtx = Either String
 type CheckCtx = EitherT String (Gen Int)
@@ -163,7 +167,7 @@ type CheckCtx = EitherT String (Gen Int)
 eval :: InferTerm -> EvalCtx CheckTerm
 eval t = case t of
   Annot cTerm _ -> return cTerm
-  InferGen _ -> Left "invariant violation: found InferGen in evaluation"
+  Unique _ _ -> Left "invariant violation: found Unique in evaluation"
 
   App f x -> do
     f' <- eval f
@@ -194,6 +198,11 @@ runChecker :: CheckCtx () -> String
 runChecker calc = case runGen (runEitherT calc) of
   Right () -> "success!"
   Left str -> str
+
+-- runInference :: CheckCtx Type -> Type
+-- runInference calc = case runGen (runEitherT calc) of
+--   Left str -> error $ "(runInference) invariant violation: " ++ str
+--   Right ty -> ty
 
 unifyTy :: Type -> Type -> CheckCtx Type
 unifyTy (Function dom1 codom1) (Function dom2 codom2) =
@@ -237,8 +246,8 @@ check eTm ty = case eTm of
 
   Abs _ body -> do
     let Function domain codomain = ty
-    v <- InferGen <$> lift gen
-    let evaled = body (Neutral (Annot (Neutral v) domain))
+    v <- Unique <$> lift gen <*> pure (Just domain)
+    let evaled = body (Neutral v)
     check evaled codomain
 
   Record fields -> do
@@ -272,7 +281,7 @@ infer :: InferTerm -> CheckCtx Type
 infer t = case t of
   Annot _ ty -> pure ty
 
-  InferGen _ -> left "invariant violation: infer found InferGen"
+  Unique _ _ -> left "invariant violation: infer found Unique"
 
   App t1 t2 -> do
     Function domain codomain <- infer t1
@@ -312,8 +321,8 @@ infer t = case t of
 
         mapM_
           (\(_name, branchTy, rhs) -> do
-            v <- InferGen <$> lift gen
-            check (rhs (Neutral (Annot (Neutral v) branchTy))) ty
+            v <- Unique <$> lift gen <*> pure (Just branchTy)
+            check (rhs (Neutral v)) ty
           )
           mergedMap
       _ -> left "found non-variant in case"
