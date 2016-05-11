@@ -64,10 +64,15 @@ instance Propagated Term where
     FVar <$> merge s1 s2 <*> merge ty1 ty2
   merge (Abs t1 ty1) (Abs t2 ty2) =
     Abs <$> merge t1 t2 <*> merge ty1 ty2
-  merge (App t11 t12 ty1) (App t21 t22 ty2) =
-    App <$> merge t11 t21 <*> merge t12 t22 <*> merge ty1 ty2
+  merge (App t11 t12 ty1) (App t21 t22 ty2) = do
+    ty1' <- merge ty1 (Just (TyFun Nothing Nothing (Just Type)))
+    mergedTys <- merge ty1' ty2
+    App <$> merge t11 t21 <*> merge t12 t22 <*> pure mergedTys
   merge (TyFun dom1 codom1 ty1) (TyFun dom2 codom2 ty2) =
     TyFun <$> merge dom1 dom2 <*> merge codom1 codom2 <*> merge ty1 ty2
+  merge (TyFun dom codom funTy) x = do
+    merge
+  merge x y@(TyFun _ _ _) = merge y x
   merge Type Type = Change False Type
   merge l r = Contradiction mempty ("term merge: " ++ show (l, r))
 
@@ -85,10 +90,10 @@ tyL f tm = case tm of
   Type -> const Type <$> f Nothing
 
 tiP :: Prism' Term Int
-tiP = prism' (flip BVar Nothing . Just) _bVarI
+tiP = prism' (\tm -> BVar (Just tm) Nothing) _bVarI
 
 tsP :: Prism' Term String
-tsP = prism' (flip FVar Nothing . Just) _fVarS
+tsP = prism' (\tm -> FVar (Just tm) Nothing) _fVarS
 
 absP :: Prism' Term Term
 absP = prism' (\tm -> Abs (Just tm) Nothing) (\(Abs tm _) -> tm)
@@ -157,6 +162,7 @@ main = do
     f <- join $ mkFVar <$> known "f" <*> pure fTy
 
     app <- mkApp f plus intTy
+    content app
 
     -- trying to infer type `Int` (because we applied it to plus)
     content fTy
