@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Day22 where
 
+import Control.Applicative ((<|>))
 import Control.Monad.Error.Class
 import Control.Monad.Gen
 import Control.Monad.Reader
@@ -63,7 +64,14 @@ data CheckNom
   = NLet String InferNom Type CheckNom
   | NNeutral InferNom
   | NAbs String CheckNom
-  deriving Show
+
+instance Show CheckNom where
+  showsPrec p t = case t of
+    NLet name iTm ty cTm ->
+      showString ("let " ++ name ++ " = ") . showsPrec p iTm . showString " in " . showsPrec p cTm
+    NNeutral iTm -> showsPrec p iTm
+    NAbs name body -> showParen (p >= 10) $
+      showString ("\\" ++ name ++ " -> ") . showsPrec 10 body
 
 -- Computations
 data InferNom
@@ -72,12 +80,27 @@ data InferNom
   = NVar String Int
   | NAnnot CheckNom Type
   | NApp InferNom CheckNom
-  deriving Show
+
+instance Show InferNom where
+  showsPrec p t = case t of
+    NVar name _ -> showString name
+    NAnnot cNom ty -> showParen (p >= 10) $
+      showsPrec 10 cNom . showString " : " . showsPrec 10 ty
+    NApp t1 t2 -> showParen (p >= 10) $
+      showsPrec 10 t1 . showString " " . showsPrec 10 t2
 
 type ReflectM = Reader [Hoas]
 
 type CheckInferM = EitherT String (Reader [Type])
 type ReifyM = GenT Int (EitherT String Identity)
+
+
+runReify :: Hoas -> Either String String
+runReify hoas =
+  let l = show <$> reifyC hoas
+      r = show <$> reifyI hoas
+      runIt = runIdentity . runEitherT . runGenT
+  in runIt l <|> runIt r
 
 reifyI :: Hoas -> ReifyM InferNom
 reifyI t = case t of
@@ -98,7 +121,7 @@ reifyC t = case t of
     unique <- gen
     body <- reifyC (f (HUnique unique))
     return $ NAbs name body
-  _ -> throwError "[reifyI] unexpectedly called with an infered term"
+  _ -> throwError "[reifyC] unexpectedly called with an infered term"
 
 
 runReflectM :: InferNom -> Hoas
@@ -177,3 +200,22 @@ eval t = case t of
     return (f iTm')
   HNeutral iTm -> eval iTm
   HAbs _name _f -> return t
+
+runHoas :: Hoas -> String
+runHoas hoas =
+  let x = do
+        evaled <- eval hoas
+        runReify evaled
+  in either id id x
+
+showHoas :: Hoas -> String
+showHoas = either id id . runReify
+
+test :: Hoas -> IO ()
+test hoas = do
+  putStrLn $ "> " ++ showHoas hoas
+  putStrLn (runHoas hoas)
+
+main :: IO ()
+main = do
+  test $ HApp (HAnnot (HAbs "f" (\x -> x)) (Function (RecordT []) (RecordT []))) (HNeutral (HVar "x" 0))
