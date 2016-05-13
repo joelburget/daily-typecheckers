@@ -17,7 +17,13 @@ data Type
   = Function Type Type        -- a -> b
   | RecordT [(String, Type)]  -- a * b
   | VariantT [(String, Type)] -- a + b
-  deriving (Eq, Show)
+  deriving Eq
+
+instance Show Type where
+  showsPrec _p t = case t of
+    Function a b -> showsPrec 8 a . showString " -> " . showsPrec 8 b
+    RecordT entries -> showString "{ " . showList entries . showString " }"
+    VariantT entries -> showString "< " . showList entries . showString " >"
 
 unifyTy :: MonadError String m => Type -> Type -> m Type
 unifyTy (Function dom1 codom1) (Function dom2 codom2) =
@@ -65,14 +71,6 @@ data CheckNom
   | NNeutral InferNom
   | NAbs String CheckNom
 
-instance Show CheckNom where
-  showsPrec p t = case t of
-    NLet name iTm ty cTm ->
-      showString ("let " ++ name ++ " = ") . showsPrec p iTm . showString " in " . showsPrec p cTm
-    NNeutral iTm -> showsPrec p iTm
-    NAbs name body -> showParen (p >= 10) $
-      showString ("\\" ++ name ++ " -> ") . showsPrec 10 body
-
 -- Computations
 data InferNom
   -- question: do we want this string here? how easy is it to reconstruct the
@@ -80,6 +78,14 @@ data InferNom
   = NVar String Int
   | NAnnot CheckNom Type
   | NApp InferNom CheckNom
+
+instance Show CheckNom where
+  showsPrec p t = case t of
+    NLet name iTm _ty cTm ->
+      showString ("let " ++ name ++ " = ") . showsPrec p iTm . showString " in " . showsPrec p cTm
+    NNeutral iTm -> showsPrec p iTm
+    NAbs name body -> showParen (p >= 10) $
+      showString ("\\" ++ name ++ " -> ") . showsPrec 10 body
 
 instance Show InferNom where
   showsPrec p t = case t of
@@ -107,7 +113,15 @@ reifyI t = case t of
   HApp iTm cTm -> NApp <$> reifyI iTm <*> reifyC cTm
   HAnnot cTm ty -> NAnnot <$> reifyC cTm <*> pure ty
   HVar name i -> pure $ NVar name i
-  _ -> throwError "[reifyI] unexpectedly called with a checked term"
+  _ ->
+    let tagName = case t of
+          HNeutral _ -> "HNeutral"
+          HAbs name _ -> "HAbs " ++ name
+          HLet name _ _ _ -> "HLet " ++ name
+          HUnique _ -> "HUnique"
+          _ -> "XXX"
+    in throwError $
+         "[reifyI] unexpectedly called with a checked term (" ++ tagName ++ ")"
 
 reifyC :: Hoas -> ReifyM CheckNom
 reifyC t = case t of
@@ -121,7 +135,17 @@ reifyC t = case t of
     unique <- gen
     body <- reifyC (f (HUnique unique))
     return $ NAbs name body
-  _ -> throwError "[reifyC] unexpectedly called with an infered term"
+  _ ->
+    let tagName = case t of
+          HAnnot _ _ -> "HAnnot"
+          HVar name _ -> "HVar " ++ name
+          HApp _ _ -> "HApp"
+          HUnique _ -> "HUnique"
+          _ -> "XXX"
+    in throwError $
+         "[reifyC] unexpectedly called with an infered term (" ++
+         tagName ++
+         ")"
 
 
 runReflectM :: InferNom -> Hoas
@@ -202,20 +226,33 @@ eval t = case t of
   HAbs _name _f -> return t
 
 runHoas :: Hoas -> String
-runHoas hoas =
-  let x = do
-        evaled <- eval hoas
-        runReify evaled
-  in either id id x
+runHoas hoas = either id id (eval hoas >>= runReify)
 
 showHoas :: Hoas -> String
 showHoas = either id id . runReify
 
-test :: Hoas -> IO ()
-test hoas = do
+runNeut :: InferNom -> String
+runNeut = runHoas . runReflectM
+
+testHoas :: Hoas -> IO ()
+testHoas hoas = do
   putStrLn $ "> " ++ showHoas hoas
   putStrLn (runHoas hoas)
 
+testNeut :: InferNom -> IO ()
+testNeut neut = do
+  putStrLn $ "> " ++ show neut
+  putStrLn $ runNeut neut
+
 main :: IO ()
 main = do
-  test $ HApp (HAnnot (HAbs "f" (\x -> x)) (Function (RecordT []) (RecordT []))) (HNeutral (HVar "x" 0))
+  let idTy = Function (RecordT []) (RecordT [])
+      app1 = HApp
+        (HAnnot (HAbs "x" (\x -> x)) idTy)
+        (HNeutral (HVar "x" 0))
+  testHoas app1
+
+  let app2 = NApp
+        (NAnnot (NAbs "x" (NNeutral (NVar "x" 0))) idTy)
+        (NNeutral (NVar "x" 0))
+  testNeut app2
