@@ -14,6 +14,14 @@ data Infer
   | Case Infer Type Check Check
   | Cut Check Type
 
+data Check
+  = Lam Check
+  | Let Pattern Infer Check
+  | Inl Check
+  | Inr Check
+  | Prd Check Check
+  | Neu Infer
+
 data Usage = Fresh | Stale deriving Eq
 
 type CheckCtx = EitherT String (State [(Type, Usage)])
@@ -55,25 +63,19 @@ infer t = case t of
         check ty lcTm
         lUsage <- (snd . head) <$> get
         assert (lUsage == Stale) "[infer Case] must consume linear variable in left case"
+        id %= tail
 
         id %= cons (tau, Fresh)
         check ty rcTm
         rUsage <- (snd . head) <$> get
         assert (rUsage == Stale) "[infer Case] must consume linear variable in right case"
+        id %= tail
 
         return ty
       _ -> throwError "[infer] infered non SumTy in case"
   Cut cTm ty -> do
     check ty cTm
     return ty
-
-data Check
-  = Lam Check
-  | Let Pattern Infer Check
-  | Inl Check
-  | Inr Check
-  | Prd Check Check
-  | Neu Infer
 
 check :: Type -> Check -> CheckCtx ()
 check ty tm = case tm of
@@ -83,6 +85,7 @@ check ty tm = case tm of
       check tau body
       rUsage <- (snd . head) <$> get
       assert (rUsage == Stale) "[check Lam] must consume linear bound variable"
+      id %= tail
     _ -> throwError "[check Lam] checking lambda against non-lolly type"
   Let pat iTm cTm -> do
     sigma <- infer iTm
@@ -93,6 +96,7 @@ check ty tm = case tm of
     rUsage <- (snd . head) <$> get
     -- XXX what's the binding story here?
     assert (rUsage == Stale) "[check Let] must consume linear bound variables"
+    id %= drop (length delta')
   Inl cTm -> case ty of
     SumTy sigma _tau -> check sigma cTm
     _ -> throwError "[check Inl] checking Inl agains non-sum type"
