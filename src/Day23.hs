@@ -1,6 +1,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
 module Day23 where
+-- Straight-up implementation of "Typing with Leftovers" by Guillaume Allais
 
 import Control.Lens hiding (Const)
 import Control.Monad.Error.Class
