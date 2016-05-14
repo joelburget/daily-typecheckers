@@ -144,3 +144,37 @@ check ty tm = case tm of
   Neu iTm -> do
     iTmTy <- infer iTm
     assert (iTmTy == ty) "[check Neu] checking infered neutral type"
+
+
+swap, illTyped, diagonal :: Check
+
+swap = Lam (Let
+  (Matching 2)
+  (V.singleton (Var 0))
+  (Prd (V.fromList [Neu (Var 1), Neu (Var 0)]))
+  )
+
+illTyped = Let
+  (Matching 2)
+  (V.singleton (Cut (Lam (Neu (Var 0))) (Lolly (V.singleton (PrimTy NatTy)) (PrimTy NatTy))))
+  (Prd (V.fromList [Neu (Var 0), Neu (Var 1)]))
+
+diagonal = Lam (Prd (V.fromList [Neu (Var 0), Neu (Var 0)]))
+
+
+main :: IO ()
+main = do
+  -- this typechecks
+  let swapTy =
+        let x = PrimTy StringTy
+            y = PrimTy NatTy
+        in Lolly (V.singleton (Tuple (V.fromList [x, y]))) (Tuple (V.fromList [y, x]))
+  putStrLn "checking swap"
+  putStrLn $ runChecker $ check swapTy swap
+
+  -- but this doesn't -- it duplicates its linear variable
+  let diagonalTy =
+        let x = PrimTy StringTy
+        in Lolly (V.singleton x) (Tuple (V.fromList [x, x]))
+  putStrLn "checking diagonal"
+  putStrLn $ runChecker $ check diagonalTy diagonal
