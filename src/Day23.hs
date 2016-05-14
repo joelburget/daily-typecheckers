@@ -87,11 +87,11 @@ check ty tm = case tm of
     sigma <- infer iTm
     let delta = typePat sigma pat
         delta' = map (, Fresh) delta
-    id %= (++ delta')
+    id %= (delta'++)
+    check ty cTm
     rUsage <- (snd . head) <$> get
     -- XXX what's the binding story here?
     assert (rUsage == Stale) "[check Let] must consume linear bound variables"
-    check ty cTm
   Inl cTm -> case ty of
     SumTy sigma _tau -> check sigma cTm
     _ -> throwError "[check Inl] checking Inl agains non-sum type"
@@ -113,8 +113,10 @@ typePat :: Type -> Pattern -> [Type]
 typePat (PrdTy sigma tau) (PrdPat p q) =
   let gamma = typePat sigma p
       delta = typePat tau q
-  -- note ordering of results
-  in delta ++ gamma
+  -- note ordering of results (gamma at head of list, delta at end) (this is
+  -- the opposite order the paper returns them in but we're accessing from the
+  -- front, not the rear)
+  in gamma ++ delta
 typePat sigma VPat = [sigma]
 -- TODO handle better
 typePat _ _ = error "[typePat] matching non PrdTy agains PrdPat"
@@ -148,8 +150,15 @@ diagonal = Lam (Prd (Neu (Var 0)) (Neu (Var 0)))
 
 main :: IO ()
 main = do
+  -- this typechecks
   let swapTy =
         let x = Const "x"
             y = Const "y"
         in Lolly (PrdTy x y) (PrdTy y x)
   putStrLn $ runChecker $ check swapTy swap
+
+  -- but this doesn't -- it duplicates its linear variable
+  let diagonalTy =
+        let x = Const "x"
+        in Lolly x (PrdTy x x)
+  putStrLn $ runChecker $ check diagonalTy diagonal
