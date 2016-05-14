@@ -29,5 +29,6 @@ executable daily-typecheckers
     propagators,
     transformers,
     lens,
-    primitive
+    primitive,
+    vector
   ghc-options: -Wall
