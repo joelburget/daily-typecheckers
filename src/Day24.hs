@@ -8,10 +8,14 @@ module Day24 where
 --   - dependency
 --   - desugaring records, variants, etc
 
+-- TODO things to check:
+-- * arities line up in all places
+-- * threading contexts specifies calling convention in a very real way
+-- * what data structures are we using (list vs vector / ralist)
+
 import Control.Lens hiding (Const)
 import Control.Monad.Error.Class
 import Control.Monad.State
-import Control.Monad.Trans.Either
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 
@@ -28,6 +32,7 @@ data Infer
   -- ... actually we need case or there is no branching!
   | Case Infer Type (Vector Check)
   | Cut Check Type
+  | Label String
 
 data Check
   = Lam Check
@@ -43,107 +48,139 @@ newtype Pattern = Matching Int
 data Primitive
   = String String
   | Nat Int
-  | Symbol String
 
 data PrimTy
   = StringTy
   | NatTy
-  | SymbolTy
   deriving Eq
 
 data Type
   = PrimTy PrimTy
+  | LabelTy String
   | Lolly (Vector Type) Type
   | Tuple (Vector Type)
   deriving Eq
 
 data Usage = Fresh | Stale deriving Eq
 
-type CheckCtx = EitherT String (State [(Type, Usage)])
+type Ctx = [(Type, Usage)]
 
-runChecker :: CheckCtx () -> String
-runChecker checker = either id (const "success!") (evalState (runEitherT checker) [])
+-- I (Joel) made the explicit choice to not use the state monad to track
+-- leftovers, since I want to take a little more care with tracking linearity.
+-- We layer it on in some places where it's helpful.
+--
+-- TODO do we need to check all linear variables have been consumed here?
+-- * we should just fix this so it passes in the empty context to the checker
+runChecker :: Either String Ctx -> String
+runChecker checker = either id (const "success!") checker
 
 assert :: MonadError String m => Bool -> String -> m ()
 assert True _ = return ()
 assert False str = throwError str
 
-inferVar :: Int -> CheckCtx Type
-inferVar k = do
+inferVar :: Ctx -> Int -> Either String (Ctx, Type)
+inferVar ctx k = do
   -- find the type, toggle usage from fresh to stale
-  -- TODO what's the lens for this?
-  (ty, usage) <- (!! k) <$> get
+  let (ty, usage) = ctx !! k
   assert (usage == Fresh) "[inferVar] you can't use a linear variable twice!"
-  ix k._2 .= Stale
-  return ty
+  return (ctx & ix k._2 .~ Stale, ty)
 
-infer :: Infer -> CheckCtx Type
-infer t = case t of
-  Var i -> inferVar i
+allTheSame :: (Eq a) => [a] -> Bool
+allTheSame xs = and $ map (== head xs) (tail xs)
+
+infer :: Ctx -> Infer -> Either String (Ctx, Type)
+infer ctx t = case t of
+  Var i -> inferVar ctx i
   App iTm appTms -> do
-    iTmTy <- infer iTm
+    (leftovers, iTmTy) <- infer ctx iTm
     case iTmTy of
       Lolly inTys outTy -> do
-        forM_ (V.zip inTys appTms) $ \(ty, tm) -> check ty tm
-        return outTy
+        leftovers2 <- flip execStateT leftovers $
+          forM (V.zip inTys appTms) $ \(ty, tm) -> do
+            preCtx <- get
+            postCtx <- lift $ check preCtx ty tm
+            put postCtx
+        return (leftovers2, outTy)
       _ -> throwError "[infer App] infered non Lolly in LHS of application"
   Case iTm ty cTms -> do
-    iTmTy <- infer iTm
+    (leftovers1, iTmTy) <- infer ctx iTm
 
-    forM_ cTms $ \cTm -> do
-      id %= cons (iTmTy, Fresh)
-      check ty cTm
-      lUsage <- (snd . head) <$> get
-      -- TODO who this is really scary I haven't been maintaining the stack
-      -- hygienically
-      id %= tail
-      assert (lUsage == Stale) "[infer Case] must consume linear variable in case branch"
+    leftovers2 <- flip execStateT leftovers1 $ forM cTms $ \cTm -> do
+      let subCtx = (iTmTy, Fresh):ctx
+      (_, hopefullyStale):newCtx <- lift $ check subCtx ty cTm
+      assert (hopefullyStale == Stale)
+        "[infer Case] must consume linear variable in case branch"
+      return newCtx
+
+    assert (allTheSame leftovers2) "[infer Case] all branches must consume the same linear variables"
 
     case iTmTy of
-      PrimTy _prim -> do
-        assert (iTmTy == ty) "[infer Case] primitive mismatch"
-        return ty
-      Tuple _values -> do
-        assert (iTmTy == ty) "[infer Case] tuple mismatch"
-        return ty
+      LabelTy _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
+      PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
+      Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
       Lolly _ _ -> throwError "[infer] can't case on function"
-  Cut cTm ty -> do
-    check ty cTm
-    return ty
 
-check :: Type -> Check -> CheckCtx ()
-check ty tm = case tm of
+    return (leftovers2, ty)
+
+  Cut cTm ty -> do
+    leftovers <- check ctx ty cTm
+    return (leftovers, ty)
+
+  Label name -> return (ctx, LabelTy name)
+
+check :: Ctx -> Type -> Check -> Either String Ctx
+check ctx ty tm = case tm of
   Lam body -> case ty of
     Lolly argTys tau -> do
       -- XXX do we need to reverse these?
       let delta = V.toList $ V.map (, Fresh) argTys
           arity = length argTys
-      id %= (delta++)
-      check tau body
+      let bodyCtx = delta ++ ctx
+      newCtx <- check bodyCtx tau body
       -- TODO remove all the duplication between this and Let
-      (usageL, rest) <- (splitAt arity) <$> get
-      id .= rest
-      forM_ usageL $ \(_ty, usage) ->
+      --
+      -- Check that the body consumed all the arguments
+      let (bodyUsage, rest) = splitAt arity newCtx
+      forM_ bodyUsage $ \(_ty, usage) ->
         assert (usage == Stale) "[check Lam] must consume linear bound variables"
+      return rest
     _ -> throwError "[check Lam] checking lambda against non-lolly type"
   Let (Matching arity) letTms cTm -> do
     assert (length letTms == arity) "[check Let] unexpected arity"
-    letTmTys <- mapM infer letTms
+    -- use the state monad to track leftovers through binding, starting with
+    -- the current context and passing the leftovers through each inference in
+    -- turn
+    (letTmTys, bindingLeftovers) <- flip runStateT ctx $ forM letTms $ \tm' -> do
+      preLeftovers <- get
+      (postLeftovers, ty') <- lift $ infer preLeftovers tm'
+      put postLeftovers
+      return ty'
     -- XXX do we need to reverse these?
-    let delta = V.toList $ V.map (, Fresh) letTmTys
-    id %= (delta++)
-    check ty cTm
-    (usageL, rest) <- (splitAt arity) <$> get
-    id .= rest
-    forM_ usageL $ \(_ty, usage) ->
+    let freshVars = V.toList $ V.map (, Fresh) letTmTys
+        bodyCtx = freshVars ++ bindingLeftovers
+    newCtx <- check bodyCtx ty cTm
+
+    -- Check that the body consumed all the arguments
+    let (bodyUsage, leftovers) = splitAt arity newCtx
+    forM_ bodyUsage $ \(_ty, usage) ->
       assert (usage == Stale) "[check Let] must consume linear bound variables"
+    return leftovers
   Prd cTms -> case ty of
-    -- TODO check vectors lign up
-    Tuple tys -> V.forM_ (V.zip cTms tys) $ \(tm', ty') -> check ty' tm'
+    -- Thread the leftover context through from left to right.
+    Tuple tys ->
+      -- Layer on a state transformer for this bit, since we're passing
+      -- leftovers from one term to the next
+      let calc = V.forM (V.zip cTms tys) $ \(tm', ty') -> do
+            leftovers <- get
+            newLeftovers <- lift $ check leftovers ty' tm'
+            put newLeftovers
+      -- execState gives back the final state
+      in execStateT calc ctx
     _ -> throwError "[check Prd] checking Prd agains non-product type"
   Neu iTm -> do
-    iTmTy <- infer iTm
+    (leftovers, iTmTy) <- infer ctx iTm
     assert (iTmTy == ty) "[check Neu] checking infered neutral type"
+    return leftovers
 
 
 swap, illTyped, diagonal :: Check
@@ -170,11 +207,11 @@ main = do
             y = PrimTy NatTy
         in Lolly (V.singleton (Tuple (V.fromList [x, y]))) (Tuple (V.fromList [y, x]))
   putStrLn "checking swap"
-  putStrLn $ runChecker $ check swapTy swap
+  putStrLn $ runChecker $ check [] swapTy swap
 
   -- but this doesn't -- it duplicates its linear variable
   let diagonalTy =
         let x = PrimTy StringTy
         in Lolly (V.singleton x) (Tuple (V.fromList [x, x]))
   putStrLn "checking diagonal"
-  putStrLn $ runChecker $ check diagonalTy diagonal
+  putStrLn $ runChecker $ check [] diagonalTy diagonal
