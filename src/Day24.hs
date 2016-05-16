@@ -16,6 +16,10 @@ module Day24 where
 --     multiple times (or not at all)
 --   - dependency
 --   - desugaring records, variants, etc
+--
+-- Idea for good error messages for linearity: instead of a boolean `Usage`,
+-- keep track of the usage sites. Also, we don't need to track usage for
+-- non-linear variables when they're introduced.
 
 -- TODO things to check:
 -- * arities line up in all places
@@ -40,7 +44,7 @@ data Infer
   --   cases branch (justifying no infered term for eliminating tuples).
   --
   -- ... actually we need case or there is no branching!
-  | Case Infer Type (Vector Check)
+  | Case Infer (Vector String) Type (Vector Check)
   | Cut Check Type
 
 data Check
@@ -114,8 +118,11 @@ infer ctx t = case t of
         leftovers2 <- check leftovers inTy appTm
         return (leftovers2, outTy)
       _ -> throwError "[infer App] infered non Lolly in LHS of application"
-  Case iTm ty cTms -> do
+  Case iTm _branches ty cTms -> do
     (leftovers1, iTmTy) <- infer ctx iTm
+
+    -- TODO: check branches (labels) matches the right-hand-sides, iTm matches
+    -- also
 
     leftovers2 <- flip execStateT leftovers1 $ forM cTms $ \cTm -> do
       let subCtx = (iTmTy, Fresh):ctx
@@ -124,13 +131,15 @@ infer ctx t = case t of
         "[infer Case] must consume linear variable in case branch"
       return newCtx
 
-    assert (allTheSame leftovers2) "[infer Case] all branches must consume the same linear variables"
+    assert (allTheSame leftovers2)
+      "[infer Case] all branches must consume the same linear variables"
 
     case iTmTy of
       LabelVec _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
-      PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
-      Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
-      Lolly _ _ -> throwError "[infer Case] can't case on function"
+      _ -> throwError "[infer Case] can't case on non-labels"
+      -- PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
+      -- Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
+      -- Lolly _ _ -> throwError "[infer Case] can't case on function"
 
     return (leftovers2, ty)
 
@@ -199,8 +208,44 @@ openI k x tm = case tm of
   BVar i -> if i == k then FVar x else tm
   FVar _ -> tm
   App iTm cTm -> App (openI k x iTm) (openC k x cTm)
-  Case iTm ty cTms -> Case (openI k x iTm) ty (V.map (openC (k + 1) x) cTms)
+  Case iTm labels ty cTms ->
+    Case (openI k x iTm) labels ty (V.map (openC (k + 1) x) cTms)
   Cut cTm ty -> Cut (openC k x cTm) ty
+
+evalI :: [Check] -> Infer -> Check
+evalI env tm = case tm of
+  BVar i -> env !! i
+  FVar name -> error ("unexpected free var in evaluation: " ++ name)
+  App iTm cTm ->
+    let iTm' = evalI env iTm
+        cTm' = evalC env cTm
+    in case iTm' of
+         Lam cBody -> evalC (cTm':env) cBody
+         _ -> error "unexpected non lambda in lhs of function application"
+  Case iTm labels _ty cTms ->
+    let iTm' = evalI env iTm
+    in case iTm' of
+         Label l ->
+           let findBranch = do
+                 branchIx <- V.elemIndex l labels
+                 cTms V.!? branchIx
+           in case findBranch of
+                Just branch -> evalC (iTm':env) branch
+                _ -> error "[evalI Case] couldn't find branch"
+         Primitive _p -> undefined
+         Prd _p -> undefined
+         Neu _iTm -> undefined
+         _ -> error "[evalI Case] unmatchable"
+  Cut cTm _ty -> evalC env cTm
+
+evalC :: [Check] -> Check -> Check
+evalC env tm = case tm of
+  Lam _ -> error "[evalC] tried evaluating bare lambda"
+  Primitive _ -> tm
+  Label name -> error ("[evalC] tried to evaluate a label: " ++ name)
+  Prd cTms -> Prd (V.map (evalC env) cTms)
+  Let _pat iTm cTm -> evalC (evalI env iTm:env) cTm
+  Neu _ -> tm
 
 openC :: Int -> String -> Check -> Check
 openC k x tm = case tm of
@@ -244,6 +289,7 @@ caseExample :: Infer
 
 caseExample = Case
   (Cut (Label "x") (LabelVec (V.fromList ["x", "y"])))
+  (V.fromList ["x", "y"])
   (PrimTy NatTy)
   (V.fromList
     [ Primitive (Nat 1)
@@ -274,3 +320,4 @@ main = do
 
   putStrLn "> checking case"
   putStrLn $ runChecker $ check [] (PrimTy NatTy) caseExample'
+  putStrLn $ evalC [] caseExample'
