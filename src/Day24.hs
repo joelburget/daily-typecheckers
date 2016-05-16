@@ -2,9 +2,17 @@
 {-# LANGUAGE TupleSections #-}
 module Day24 where
 
--- * n-tuples, n-functions
+-- Significant features of this treatment include:
+-- * n-tuples as a generalization of 2-tuples. This is an easy optimization
+--   win for little extra work.
+-- * labels (as a branching mechanism)
+-- * bidirectional checking. we're following the treatment from Guillaume
+--   Allais' "Typing with Leftovers" with modifications.
+-- * linearity
+--
 -- * working towards:
---   - usage annotations
+--   - explicit usage annotations, so we can have variables that are used
+--     multiple times (or not at all)
 --   - dependency
 --   - desugaring records, variants, etc
 
