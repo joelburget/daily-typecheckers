@@ -22,7 +22,7 @@ import qualified Data.Vector as V
 
 data Infer
   = Var Int
-  | App Infer (Vector Check)
+  | App Infer Check
   -- questions arise re the eliminator for tuples
   -- * is it case, or was case just the eliminator for sums?
   -- * is let a suitable eliminator? but let's a checked term, not infered
@@ -37,11 +37,15 @@ data Infer
 data Check
   = Lam Check
   | Prd (Vector Check)
-  | Let Pattern (Vector Infer) Check
+  | Let Pattern Infer Check
   | Neu Infer
 
--- how many variables does this match (kind of redundant)
-newtype Pattern = Matching Int
+-- Match nested n-tuples.
+--
+-- Easy extension: `Underscore` doesn't bind any variables. Useful?
+data Pattern
+  = MatchTuple (Vector Pattern)
+  | MatchVar
 
 -- floating point numbers suck http://blog.plover.com/prog/#fp-sucks
 -- (so do dates and times)
@@ -57,7 +61,7 @@ data PrimTy
 data Type
   = PrimTy PrimTy
   | LabelTy String
-  | Lolly (Vector Type) Type
+  | Lolly Type Type
   | Tuple (Vector Type)
   deriving Eq
 
@@ -83,7 +87,7 @@ inferVar ctx k = do
   -- find the type, toggle usage from fresh to stale
   let (ty, usage) = ctx !! k
   assert (usage == Fresh) "[inferVar] you can't use a linear variable twice!"
-  return (ctx & ix k._2 .~ Stale, ty)
+  return (ctx & ix k . _2 .~ Stale, ty)
 
 allTheSame :: (Eq a) => [a] -> Bool
 allTheSame xs = and $ map (== head xs) (tail xs)
@@ -91,15 +95,11 @@ allTheSame xs = and $ map (== head xs) (tail xs)
 infer :: Ctx -> Infer -> Either String (Ctx, Type)
 infer ctx t = case t of
   Var i -> inferVar ctx i
-  App iTm appTms -> do
+  App iTm appTm -> do
     (leftovers, iTmTy) <- infer ctx iTm
     case iTmTy of
-      Lolly inTys outTy -> do
-        leftovers2 <- flip execStateT leftovers $
-          forM (V.zip inTys appTms) $ \(ty, tm) -> do
-            preCtx <- get
-            postCtx <- lift $ check preCtx ty tm
-            put postCtx
+      Lolly inTy outTy -> do
+        leftovers2 <- check leftovers inTy appTm
         return (leftovers2, outTy)
       _ -> throwError "[infer App] infered non Lolly in LHS of application"
   Case iTm ty cTms -> do
@@ -131,46 +131,32 @@ infer ctx t = case t of
 check :: Ctx -> Type -> Check -> Either String Ctx
 check ctx ty tm = case tm of
   Lam body -> case ty of
-    Lolly argTys tau -> do
-      -- XXX do we need to reverse these?
-      let delta = V.toList $ V.map (, Fresh) argTys
-          arity = length argTys
-      let bodyCtx = delta ++ ctx
-      newCtx <- check bodyCtx tau body
-      -- TODO remove all the duplication between this and Let
-      --
-      -- Check that the body consumed all the arguments
-      let (bodyUsage, rest) = splitAt arity newCtx
-      forM_ bodyUsage $ \(_ty, usage) ->
-        assert (usage == Stale) "[check Lam] must consume linear bound variables"
-      return rest
+    Lolly argTy tau -> do
+      let bodyCtx = (argTy, Fresh):ctx
+      (_, usage):leftovers <- check bodyCtx tau body
+      assert (usage == Stale) "[check Lam] must consume linear bound variable"
+      return leftovers
     _ -> throwError "[check Lam] checking lambda against non-lolly type"
-  Let (Matching arity) letTms cTm -> do
-    assert (length letTms == arity) "[check Let] unexpected arity"
-    -- use the state monad to track leftovers through binding, starting with
-    -- the current context and passing the leftovers through each inference in
-    -- turn
-    (letTmTys, bindingLeftovers) <- flip runStateT ctx $ forM letTms $ \tm' -> do
-      preLeftovers <- get
-      (postLeftovers, ty') <- lift $ infer preLeftovers tm'
-      put postLeftovers
-      return ty'
+  Let pattern letTm cTm -> do
+    (leftovers, tmTy) <- infer ctx letTm
+    let patternTy = typePattern pattern tmTy
     -- XXX do we need to reverse these?
-    let freshVars = V.toList $ V.map (, Fresh) letTmTys
-        bodyCtx = freshVars ++ bindingLeftovers
+    let freshVars = map (, Fresh) patternTy
+        bodyCtx = freshVars ++ leftovers
+        arity = length patternTy
     newCtx <- check bodyCtx ty cTm
 
     -- Check that the body consumed all the arguments
-    let (bodyUsage, leftovers) = splitAt arity newCtx
+    let (bodyUsage, leftovers2) = splitAt arity newCtx
     forM_ bodyUsage $ \(_ty, usage) ->
       assert (usage == Stale) "[check Let] must consume linear bound variables"
-    return leftovers
+    return leftovers2
   Prd cTms -> case ty of
     -- Thread the leftover context through from left to right.
     Tuple tys ->
       -- Layer on a state transformer for this bit, since we're passing
       -- leftovers from one term to the next
-      let calc = V.forM (V.zip cTms tys) $ \(tm', ty') -> do
+      let calc = forM (V.zip cTms tys) $ \(tm', ty') -> do
             leftovers <- get
             newLeftovers <- lift $ check leftovers ty' tm'
             put newLeftovers
@@ -182,18 +168,25 @@ check ctx ty tm = case tm of
     assert (iTmTy == ty) "[check Neu] checking infered neutral type"
     return leftovers
 
+typePattern :: Pattern -> Type -> [Type]
+typePattern MatchVar ty = [ty]
+-- TODO check these line up
+typePattern (MatchTuple subPats) (Tuple subTys) =
+  let zipped = V.zip subPats subTys
+  in concatMap (uncurry typePattern) zipped
+typePattern _ _ = error "[typePattern] misaligned pattern"
 
 swap, illTyped, diagonal :: Check
 
 swap = Lam (Let
-  (Matching 2)
-  (V.singleton (Var 0))
+  (MatchTuple (V.fromList [MatchVar, MatchVar]))
+  (Var 0)
   (Prd (V.fromList [Neu (Var 1), Neu (Var 0)]))
   )
 
 illTyped = Let
-  (Matching 2)
-  (V.singleton (Cut (Lam (Neu (Var 0))) (Lolly (V.singleton (PrimTy NatTy)) (PrimTy NatTy))))
+  (MatchTuple (V.fromList [MatchVar, MatchVar]))
+  (Cut (Lam (Neu (Var 0))) (Lolly (PrimTy NatTy) (PrimTy NatTy)))
   (Prd (V.fromList [Neu (Var 0), Neu (Var 1)]))
 
 diagonal = Lam (Prd (V.fromList [Neu (Var 0), Neu (Var 0)]))
@@ -205,13 +198,13 @@ main = do
   let swapTy =
         let x = PrimTy StringTy
             y = PrimTy NatTy
-        in Lolly (V.singleton (Tuple (V.fromList [x, y]))) (Tuple (V.fromList [y, x]))
-  putStrLn "checking swap"
+        in Lolly (Tuple (V.fromList [x, y])) (Tuple (V.fromList [y, x]))
+  putStrLn "> checking swap"
   putStrLn $ runChecker $ check [] swapTy swap
 
   -- but this doesn't -- it duplicates its linear variable
   let diagonalTy =
         let x = PrimTy StringTy
-        in Lolly (V.singleton x) (Tuple (V.fromList [x, x]))
-  putStrLn "checking diagonal"
+        in Lolly x (Tuple (V.fromList [x, x]))
+  putStrLn "> checking diagonal (expected failure due to duplicating linear variable)"
   putStrLn $ runChecker $ check [] diagonalTy diagonal
