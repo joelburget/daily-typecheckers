@@ -41,12 +41,13 @@ data Infer
   -- ... actually we need case or there is no branching!
   | Case Infer Type (Vector Check)
   | Cut Check Type
-  | Label String
 
 data Check
   = Lam Check
   | Prd (Vector Check)
   | Let Pattern Infer Check
+  | Label String
+  | Primitive Primitive
   | Neu Infer
 
 -- Match nested n-tuples.
@@ -69,7 +70,7 @@ data PrimTy
 
 data Type
   = PrimTy PrimTy
-  | LabelTy String
+  | LabelVec (Vector String)
   | Lolly Type Type
   | Tuple (Vector Type)
   deriving Eq
@@ -124,7 +125,7 @@ infer ctx t = case t of
     assert (allTheSame leftovers2) "[infer Case] all branches must consume the same linear variables"
 
     case iTmTy of
-      LabelTy _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
+      LabelVec _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
       PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
       Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
       Lolly _ _ -> throwError "[infer] can't case on function"
@@ -134,8 +135,6 @@ infer ctx t = case t of
   Cut cTm ty -> do
     leftovers <- check ctx ty cTm
     return (leftovers, ty)
-
-  Label name -> return (ctx, LabelTy name)
 
 check :: Ctx -> Type -> Check -> Either String Ctx
 check ctx ty tm = case tm of
@@ -172,6 +171,22 @@ check ctx ty tm = case tm of
       -- execState gives back the final state
       in execStateT calc ctx
     _ -> throwError "[check Prd] checking Prd agains non-product type"
+
+  Primitive prim -> do
+    case prim of
+      String _ -> assert (ty == PrimTy StringTy)
+        "[check Primitive] trying to match string against non-string type"
+      Nat _ -> assert (ty == PrimTy NatTy)
+        "[check Primitive] trying to match nat against non-nat type"
+    return ctx
+
+  Label name -> case ty of
+    LabelVec names -> do
+      assert (name `V.elem` names)
+        "[check Label] didn't find label in label vec"
+      return ctx
+    _ -> throwError "[check Label] checking Label against non-label-vec"
+
   Neu iTm -> do
     (leftovers, iTmTy) <- infer ctx iTm
     assert (iTmTy == ty) "[check Neu] checking infered neutral type"
@@ -200,6 +215,19 @@ illTyped = Let
 
 diagonal = Lam (Prd (V.fromList [Neu (Var 0), Neu (Var 0)]))
 
+caseExample :: Infer
+
+caseExample = Case
+  (Cut (Label "x") (LabelVec (V.fromList ["x", "y"])))
+  (PrimTy NatTy)
+  (V.fromList
+    [ Primitive (Nat 1)
+    , Primitive (Nat 2)
+    ]
+  )
+
+caseExample' :: Check
+caseExample' = Neu caseExample
 
 main :: IO ()
 main = do
@@ -211,9 +239,13 @@ main = do
   putStrLn "> checking swap"
   putStrLn $ runChecker $ check [] swapTy swap
 
+
   -- but this doesn't -- it duplicates its linear variable
   let diagonalTy =
         let x = PrimTy StringTy
         in Lolly x (Tuple (V.fromList [x, x]))
   putStrLn "> checking diagonal (expected failure due to duplicating linear variable)"
   putStrLn $ runChecker $ check [] diagonalTy diagonal
+
+  putStrLn "> checking case"
+  putStrLn $ runChecker $ check [] (PrimTy NatTy) caseExample'
