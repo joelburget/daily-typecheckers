@@ -30,7 +30,8 @@ import qualified Data.Vector as V
 
 
 data Infer
-  = Var Int
+  = BVar Int
+  | FVar String
   | App Infer Check
   -- questions arise re the eliminator for tuples
   -- * is it case, or was case just the eliminator for sums?
@@ -104,7 +105,8 @@ allTheSame xs = and $ map (== head xs) (tail xs)
 
 infer :: Ctx -> Infer -> Either String (Ctx, Type)
 infer ctx t = case t of
-  Var i -> inferVar ctx i
+  BVar i -> inferVar ctx i
+  FVar _name -> throwError "[infer FVar] found unexpected free variable"
   App iTm appTm -> do
     (leftovers, iTmTy) <- infer ctx iTm
     case iTmTy of
@@ -128,7 +130,7 @@ infer ctx t = case t of
       LabelVec _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
       PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
       Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
-      Lolly _ _ -> throwError "[infer] can't case on function"
+      Lolly _ _ -> throwError "[infer Case] can't case on function"
 
     return (leftovers2, ty)
 
@@ -192,6 +194,25 @@ check ctx ty tm = case tm of
     assert (iTmTy == ty) "[check Neu] checking infered neutral type"
     return leftovers
 
+openI :: Int -> String -> Infer -> Infer
+openI k x tm = case tm of
+  BVar i -> if i == k then FVar x else tm
+  FVar _ -> tm
+  App iTm cTm -> App (openI k x iTm) (openC k x cTm)
+  Case iTm ty cTms -> Case (openI k x iTm) ty (V.map (openC (k + 1) x) cTms)
+  Cut cTm ty -> Cut (openC k x cTm) ty
+
+openC :: Int -> String -> Check -> Check
+openC k x tm = case tm of
+  Lam cTm -> Lam (openC (k + 1) x cTm)
+  Prd cTms -> Prd (V.map (openC k x) cTms)
+  Let pat iTm cTm ->
+    let bindingSize = patternSize pat
+    in Let pat (openI k x iTm) (openC (k + bindingSize) x cTm)
+  Label _ -> tm
+  Primitive _ -> tm
+  Neu iTm -> Neu (openI k x iTm)
+
 typePattern :: Pattern -> Type -> [Type]
 typePattern MatchVar ty = [ty]
 -- TODO check these line up
@@ -200,20 +221,24 @@ typePattern (MatchTuple subPats) (Tuple subTys) =
   in concatMap (uncurry typePattern) zipped
 typePattern _ _ = error "[typePattern] misaligned pattern"
 
+patternSize :: Pattern -> Int
+patternSize MatchVar = 1
+patternSize (MatchTuple subPats) = sum (V.map patternSize subPats)
+
 swap, illTyped, diagonal :: Check
 
 swap = Lam (Let
   (MatchTuple (V.fromList [MatchVar, MatchVar]))
-  (Var 0)
-  (Prd (V.fromList [Neu (Var 1), Neu (Var 0)]))
+  (BVar 0)
+  (Prd (V.fromList [Neu (BVar 1), Neu (BVar 0)]))
   )
 
 illTyped = Let
   (MatchTuple (V.fromList [MatchVar, MatchVar]))
-  (Cut (Lam (Neu (Var 0))) (Lolly (PrimTy NatTy) (PrimTy NatTy)))
-  (Prd (V.fromList [Neu (Var 0), Neu (Var 1)]))
+  (Cut (Lam (Neu (BVar 0))) (Lolly (PrimTy NatTy) (PrimTy NatTy)))
+  (Prd (V.fromList [Neu (BVar 0), Neu (BVar 1)]))
 
-diagonal = Lam (Prd (V.fromList [Neu (Var 0), Neu (Var 0)]))
+diagonal = Lam (Prd (V.fromList [Neu (BVar 0), Neu (BVar 0)]))
 
 caseExample :: Infer
 
