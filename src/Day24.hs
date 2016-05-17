@@ -33,6 +33,7 @@ import Data.Vector (Vector)
 import qualified Data.Vector as V
 
 
+-- infered terms / eliminations / neutral terms
 data Infer
   = BVar Int
   | FVar String
@@ -48,6 +49,7 @@ data Infer
   | Cut Check Type
   deriving Show
 
+-- checked terms / introductions / values
 data Check
   = Lam Check
   | Prd (Vector Check)
