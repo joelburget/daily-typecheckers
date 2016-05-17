@@ -84,7 +84,12 @@ data Type
   | Tuple (Vector Type)
   deriving (Eq, Show)
 
-data Usage = Fresh | Stale deriving Eq
+data Usage = Unexhaustible | Fresh | Exhausted deriving Eq
+
+useVar :: Usage -> Either String Usage
+useVar Unexhaustible = Right Unexhaustible
+useVar Fresh = Right Exhausted
+useVar Exhausted = Left "[useVar] used exhausted variable"
 
 type Ctx = [(Type, Usage)]
 
@@ -103,10 +108,10 @@ assert False str = throwError str
 
 inferVar :: Ctx -> Int -> Either String (Ctx, Type)
 inferVar ctx k = do
-  -- find the type, toggle usage from fresh to stale
+  -- find the type, count this as a usage
   let (ty, usage) = ctx !! k
-  assert (usage == Fresh) "[inferVar] you can't use a linear variable twice!"
-  return (ctx & ix k . _2 .~ Stale, ty)
+  usage' <- useVar usage
+  return (ctx & ix k . _2 .~ usage', ty)
 
 allTheSame :: (Eq a) => [a] -> Bool
 allTheSame xs = and $ map (== head xs) (tail xs)
@@ -130,8 +135,8 @@ infer ctx t = case t of
 
     leftovers2 <- flip execStateT leftovers1 $ forM cTms $ \cTm -> do
       let subCtx = (iTmTy, Fresh):ctx
-      (_, hopefullyStale):newCtx <- lift $ check subCtx ty cTm
-      assert (hopefullyStale == Stale)
+      (_, usage):newCtx <- lift $ check subCtx ty cTm
+      assert (usage /= Fresh)
         "[infer Case] must consume linear variable in case branch"
       return newCtx
 
@@ -157,7 +162,7 @@ check ctx ty tm = case tm of
     Lolly argTy tau -> do
       let bodyCtx = (argTy, Fresh):ctx
       (_, usage):leftovers <- check bodyCtx tau body
-      assert (usage == Stale) "[check Lam] must consume linear bound variable"
+      assert (usage /= Fresh) "[check Lam] must consume linear bound variable"
       return leftovers
     _ -> throwError "[check Lam] checking lambda against non-lolly type"
   Let pattern letTm cTm -> do
@@ -172,7 +177,7 @@ check ctx ty tm = case tm of
     -- Check that the body consumed all the arguments
     let (bodyUsage, leftovers2) = splitAt arity newCtx
     forM_ bodyUsage $ \(_ty, usage) ->
-      assert (usage == Stale) "[check Let] must consume linear bound variables"
+      assert (usage /= Fresh) "[check Let] must consume linear bound variables"
     return leftovers2
   Prd cTms -> case ty of
     -- Thread the leftover context through from left to right.
