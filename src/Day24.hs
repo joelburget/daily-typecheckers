@@ -46,6 +46,7 @@ data Infer
   -- ... actually we need case or there is no branching!
   | Case Infer (Vector String) Type (Vector Check)
   | Cut Check Type
+  deriving Show
 
 data Check
   = Lam Check
@@ -54,6 +55,7 @@ data Check
   | Label String
   | Primitive Primitive
   | Neu Infer
+  deriving Show
 
 -- Match nested n-tuples.
 --
@@ -61,24 +63,26 @@ data Check
 data Pattern
   = MatchTuple (Vector Pattern)
   | MatchVar
+  deriving Show
 
 -- floating point numbers suck http://blog.plover.com/prog/#fp-sucks
 -- (so do dates and times)
 data Primitive
   = String String
   | Nat Int
+  deriving Show
 
 data PrimTy
   = StringTy
   | NatTy
-  deriving Eq
+  deriving (Eq, Show)
 
 data Type
   = PrimTy PrimTy
   | LabelVec (Vector String)
   | Lolly Type Type
   | Tuple (Vector Type)
-  deriving Eq
+  deriving (Eq, Show)
 
 data Usage = Fresh | Stale deriving Eq
 
@@ -240,11 +244,11 @@ evalI env tm = case tm of
 
 evalC :: [Check] -> Check -> Check
 evalC env tm = case tm of
-  Lam _ -> error "[evalC] tried evaluating bare lambda"
-  Primitive _ -> tm
-  Label name -> error ("[evalC] tried to evaluate a label: " ++ name)
   Prd cTms -> Prd (V.map (evalC env) cTms)
   Let _pat iTm cTm -> evalC (evalI env iTm:env) cTm
+  Lam _ -> tm
+  Primitive _ -> tm
+  Label _ -> tm
   Neu _ -> tm
 
 openC :: Int -> String -> Check -> Check
@@ -320,4 +324,4 @@ main = do
 
   putStrLn "> checking case"
   putStrLn $ runChecker $ check [] (PrimTy NatTy) caseExample'
-  putStrLn $ evalC [] caseExample'
+  print $ evalI [] caseExample
