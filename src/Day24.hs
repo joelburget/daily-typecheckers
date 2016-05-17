@@ -62,7 +62,7 @@ data Check
 -- Easy extension: `Underscore` doesn't bind any variables. Useful?
 data Pattern
   = MatchTuple (Vector Pattern)
-  | MatchVar
+  | MatchVar Usage
   deriving Show
 
 -- floating point numbers suck http://blog.plover.com/prog/#fp-sucks
@@ -84,11 +84,12 @@ data Type
   | Tuple (Vector Type)
   deriving (Eq, Show)
 
-data Usage = Unexhaustible | Fresh | Exhausted deriving Eq
+data Usage = Inexhaustible | UseOnce | Exhausted
+  deriving (Eq, Show)
 
 useVar :: Usage -> Either String Usage
-useVar Unexhaustible = Right Unexhaustible
-useVar Fresh = Right Exhausted
+useVar Inexhaustible = Right Inexhaustible
+useVar UseOnce = Right Exhausted
 useVar Exhausted = Left "[useVar] used exhausted variable"
 
 type Ctx = [(Type, Usage)]
@@ -134,9 +135,9 @@ infer ctx t = case t of
     -- also
 
     leftovers2 <- flip execStateT leftovers1 $ forM cTms $ \cTm -> do
-      let subCtx = (iTmTy, Fresh):ctx
+      let subCtx = (iTmTy, UseOnce):ctx
       (_, usage):newCtx <- lift $ check subCtx ty cTm
-      assert (usage /= Fresh)
+      assert (usage /= UseOnce)
         "[infer Case] must consume linear variable in case branch"
       return newCtx
 
@@ -160,16 +161,16 @@ check :: Ctx -> Type -> Check -> Either String Ctx
 check ctx ty tm = case tm of
   Lam body -> case ty of
     Lolly argTy tau -> do
-      let bodyCtx = (argTy, Fresh):ctx
+      let bodyCtx = (argTy, UseOnce):ctx
       (_, usage):leftovers <- check bodyCtx tau body
-      assert (usage /= Fresh) "[check Lam] must consume linear bound variable"
+      assert (usage /= UseOnce) "[check Lam] must consume linear bound variable"
       return leftovers
     _ -> throwError "[check Lam] checking lambda against non-lolly type"
   Let pattern letTm cTm -> do
     (leftovers, tmTy) <- infer ctx letTm
     let patternTy = typePattern pattern tmTy
     -- XXX do we need to reverse these?
-    let freshVars = map (, Fresh) patternTy
+    let freshVars = map (, UseOnce) patternTy
         bodyCtx = freshVars ++ leftovers
         arity = length patternTy
     newCtx <- check bodyCtx ty cTm
@@ -177,7 +178,7 @@ check ctx ty tm = case tm of
     -- Check that the body consumed all the arguments
     let (bodyUsage, leftovers2) = splitAt arity newCtx
     forM_ bodyUsage $ \(_ty, usage) ->
-      assert (usage /= Fresh) "[check Let] must consume linear bound variables"
+      assert (usage /= UseOnce) "[check Let] must consume linear bound variables"
     return leftovers2
   Prd cTms -> case ty of
     -- Thread the leftover context through from left to right.
@@ -268,7 +269,7 @@ openC k x tm = case tm of
   Neu iTm -> Neu (openI k x iTm)
 
 typePattern :: Pattern -> Type -> [Type]
-typePattern MatchVar ty = [ty]
+typePattern (MatchVar _) ty = [ty]
 -- TODO check these line up
 typePattern (MatchTuple subPats) (Tuple subTys) =
   let zipped = V.zip subPats subTys
@@ -276,19 +277,19 @@ typePattern (MatchTuple subPats) (Tuple subTys) =
 typePattern _ _ = error "[typePattern] misaligned pattern"
 
 patternSize :: Pattern -> Int
-patternSize MatchVar = 1
+patternSize (MatchVar _0) = 1
 patternSize (MatchTuple subPats) = sum (V.map patternSize subPats)
 
 swap, illTyped, diagonal :: Check
 
 swap = Lam (Let
-  (MatchTuple (V.fromList [MatchVar, MatchVar]))
+  (MatchTuple (V.fromList [MatchVar UseOnce, MatchVar UseOnce]))
   (BVar 0)
   (Prd (V.fromList [Neu (BVar 1), Neu (BVar 0)]))
   )
 
 illTyped = Let
-  (MatchTuple (V.fromList [MatchVar, MatchVar]))
+  (MatchTuple (V.fromList [MatchVar UseOnce, MatchVar UseOnce]))
   (Cut (Lam (Neu (BVar 0))) (Lolly (PrimTy NatTy) (PrimTy NatTy)))
   (Prd (V.fromList [Neu (BVar 0), Neu (BVar 1)]))
 
