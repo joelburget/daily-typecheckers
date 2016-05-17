@@ -115,7 +115,8 @@ inferVar ctx k = do
   return (ctx & ix k . _2 .~ usage', ty)
 
 allTheSame :: (Eq a) => [a] -> Bool
-allTheSame xs = and $ map (== head xs) (tail xs)
+allTheSame [] = True
+allTheSame ( x:xs ) = and $ map (== x) xs
 
 infer :: Ctx -> Infer -> Either String (Ctx, Type)
 infer ctx t = case t of
@@ -135,7 +136,7 @@ infer ctx t = case t of
     -- also
 
     leftovers2 <- flip execStateT leftovers1 $ forM cTms $ \cTm -> do
-      let subCtx = (iTmTy, UseOnce):ctx
+      let subCtx = (iTmTy, Inexhaustible):ctx
       (_, usage):newCtx <- lift $ check subCtx ty cTm
       assert (usage /= UseOnce)
         "[infer Case] must consume linear variable in case branch"
@@ -144,12 +145,12 @@ infer ctx t = case t of
     assert (allTheSame leftovers2)
       "[infer Case] all branches must consume the same linear variables"
 
-    case iTmTy of
-      LabelVec _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
-      _ -> throwError "[infer Case] can't case on non-labels"
-      -- PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
-      -- Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
-      -- Lolly _ _ -> throwError "[infer Case] can't case on function"
+--     case iTmTy of
+--       LabelVec _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
+--       _ -> throwError "[infer Case] can't case on non-labels"
+--       -- PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
+--       -- Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
+--       -- Lolly _ _ -> throwError "[infer Case] can't case on function"
 
     return (leftovers2, ty)
 
