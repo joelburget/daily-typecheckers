@@ -38,14 +38,14 @@ data CheckTerm
   -- Neither a constructor nor change of direction.
   --
   -- The type is the return type.
-  = Let String InferTerm Type (CheckTerm -> CheckTerm)
+  = Let String InferTerm Type (InferTerm -> CheckTerm)
 
   -- switch direction (infer -> check)
   | Neutral InferTerm
 
   -- constructors
   -- \x -> CheckedTerm
-  | Abs String (CheckTerm -> CheckTerm)
+  | Abs String (InferTerm -> CheckTerm)
   | Record [(String, CheckTerm)]
   | Variant String CheckTerm
 
@@ -64,7 +64,7 @@ data InferTerm
   -- since that's the neutral position, then CheckTerms for the rest
   | App InferTerm CheckTerm
   | AccessField InferTerm String
-  | Case InferTerm Type [(String, CheckTerm -> CheckTerm)]
+  | Case InferTerm Type [(String, InferTerm -> CheckTerm)]
 
 
 data NCheckTerm
@@ -88,7 +88,7 @@ data NInferTerm
 reflect :: NCheckTerm -> CheckTerm
 reflect t = runReader (cReflect t) Map.empty
 
-cReflect :: NCheckTerm -> Reader (Map.Map String CheckTerm) CheckTerm
+cReflect :: NCheckTerm -> Reader (Map.Map String InferTerm) CheckTerm
 cReflect nTm = case nTm of
   NLet name iTm ty cTm -> do
     table <- ask
@@ -106,7 +106,7 @@ cReflect nTm = case nTm of
     return $ Record fields'
   NVariant str cTm -> Variant str <$> cReflect cTm
 
-iReflect :: NInferTerm -> Reader (Map.Map String CheckTerm) InferTerm
+iReflect :: NInferTerm -> Reader (Map.Map String InferTerm) InferTerm
 iReflect nTm = case nTm of
   NVar name -> do
     let ty = undefined
@@ -139,7 +139,7 @@ iReify t = case t of
     branches' <- (`Map.traverseWithKey` Map.fromList branches) $ \name f -> do
       ident <- gen
       local (Map.insert ident (NVar name)) $
-        cReify (f (Neutral (Unique ident Nothing)))
+        cReify (f (Unique ident Nothing))
     return $ NCase iTm' ty (Map.toList branches')
 
 cReify :: CheckTerm -> ReaderT (Map.Map Int NInferTerm) (Gen Int) NCheckTerm
@@ -148,13 +148,13 @@ cReify t = case t of
     iTm' <- iReify iTm
     ident <- gen
     nom <- local (Map.insert ident (NVar name)) $
-      cReify (f (Neutral (Unique ident Nothing)))
+      cReify (f (Unique ident Nothing))
     return $ NLet name iTm' ty nom
   Neutral iTm -> NNeutral <$> iReify iTm
   Abs name f -> do
     ident <- gen
     nom <- local (Map.insert ident (NVar name)) $
-      cReify (f (Neutral (Unique ident Nothing)))
+      cReify (f (Unique ident Nothing))
     return $ NAbs name nom
   Record fields -> do
     fields' <- Map.toList <$> traverse cReify (Map.fromList fields)
@@ -172,8 +172,9 @@ eval t = case t of
   App f x -> do
     f' <- eval f
     case f' of
+      -- XXX stop propagating neutrals?
       Neutral f'' -> return $ Neutral (App f'' x)
-      Abs _ f'' -> return $ f'' x
+      Abs _ f'' -> return $ Neutral (f'' x)
       _ -> Left "invariant violation: eval found non-Neutral / Abs in function position"
 
   AccessField iTm name -> do
@@ -236,7 +237,7 @@ check eTm ty = case eTm of
   Let _name t1 ty' body -> do
     t1Ty <- infer t1
     _ <- unifyTy t1Ty ty'
-    let bodyVal = body (Neutral t1)
+    let bodyVal = body t1
     check bodyVal ty
 
   Neutral iTm -> do
@@ -247,7 +248,7 @@ check eTm ty = case eTm of
   Abs _ body -> do
     let Function domain codomain = ty
     v <- Unique <$> lift gen <*> pure (Just domain)
-    let evaled = body (Neutral v)
+    let evaled = body v
     check evaled codomain
 
   Record fields -> do
@@ -330,75 +331,75 @@ infer t = case t of
 
 
 main :: IO ()
-main = do
-  let unit = Record []
-      unitTy = RecordT []
-      xy = Record
-        [ ("x", unit)
-        , ("y", unit)
-        ]
-      xyTy = RecordT
-        [ ("x", unitTy)
-        , ("y", unitTy)
-        ]
+main = putStrLn "here"
+  -- let unit = Record []
+  --     unitTy = RecordT []
+  --     xy = Record
+  --       [ ("x", unit)
+  --       , ("y", unit)
+  --       ]
+  --     xyTy = RecordT
+  --       [ ("x", unitTy)
+  --       , ("y", unitTy)
+  --       ]
 
-  -- boring
-  print $ runChecker $
-    let tm = Abs "id" (\x -> x)
-        ty = Function unitTy unitTy
-    in check tm ty
+  -- -- boring
+  -- print $ runChecker $
+  --   let tm = Abs "id" (\x -> x)
+  --       ty = Function unitTy unitTy
+  --   in check tm ty
 
-  -- standard record
-  print $ runChecker $
-    let tm = Let
-          "xy"
-          (Annot xy xyTy)
-          xyTy
-          (\x -> Neutral
-            (AccessField (Annot x xyTy) "x")
-          )
-    in check tm unitTy
+  -- -- standard record
+  -- print $ runChecker $
+  --   let tm = Let
+  --         "xy"
+  --         (Annot xy xyTy)
+  --         xyTy
+  --         (\x -> Neutral
+  --           (AccessField (Annot x xyTy) "x")
+  --         )
+  --   in check tm unitTy
 
-  -- record subtyping
-  print $ runChecker $
-    let xRecTy = RecordT [("x", unitTy)]
-        tm = Let
-          "xy"
-          (Annot xy xRecTy)
-          xRecTy
-          (\x -> Neutral
-            (AccessField (Annot x xRecTy) "x")
-          )
-    in check tm unitTy
+  -- -- record subtyping
+  -- print $ runChecker $
+  --   let xRecTy = RecordT [("x", unitTy)]
+  --       tm = Let
+  --         "xy"
+  --         (Annot xy xRecTy)
+  --         xRecTy
+  --         (\x -> Neutral
+  --           (AccessField (Annot x xRecTy) "x")
+  --         )
+  --   in check tm unitTy
 
-  -- variant subtyping
-  --
-  -- left () : { left () | right () }
-  print $ runChecker $
-    let eitherTy = VariantT
-          [ ("left", unitTy)
-          , ("right", unitTy)
-          ]
-    in check (Variant "left" unit) eitherTy
+  -- -- variant subtyping
+  -- --
+  -- -- left () : { left () | right () }
+  -- print $ runChecker $
+  --   let eitherTy = VariantT
+  --         [ ("left", unitTy)
+  --         , ("right", unitTy)
+  --         ]
+  --   in check (Variant "left" unit) eitherTy
 
-  -- let x = left () : { left : () | right : () }
-  -- in case x of
-  --      left y -> y
-  --      right y -> y
-  print $
-    let eitherTy = VariantT
-          [ ("left", unitTy)
-          , ("right", unitTy)
-          ]
-        tm = Let
-          "e"
-          (Annot (Variant "left" unit) eitherTy)
-          eitherTy
-          (\x -> Neutral
-            (Case (Annot x eitherTy) unitTy
-              [ ("left", \y -> y)
-              , ("right", \y -> y)
-              ]
-            )
-          )
-    in (runChecker (check tm unitTy), reify <$> eval (Annot tm unitTy))
+  -- -- let x = left () : { left : () | right : () }
+  -- -- in case x of
+  -- --      left y -> y
+  -- --      right y -> y
+  -- print $
+  --   let eitherTy = VariantT
+  --         [ ("left", unitTy)
+  --         , ("right", unitTy)
+  --         ]
+  --       tm = Let
+  --         "e"
+  --         (Annot (Variant "left" unit) eitherTy)
+  --         eitherTy
+  --         (\x -> Neutral
+  --           (Case (Annot x eitherTy) unitTy
+  --             [ ("left", \y -> y)
+  --             , ("right", \y -> y)
+  --             ]
+  --           )
+  --         )
+  --   in (runChecker (check tm unitTy), reify <$> eval (Annot tm unitTy))
