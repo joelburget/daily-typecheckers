@@ -80,7 +80,6 @@ data Primitive
 pattern NatV i = Primitive (Nat i)
 pattern StrV s = Primitive (String s)
 
-
 -- We should think about a more extensible way to add primops to the language
 -- -- there will probably be a registry mapping from a name to its type and
 -- evaluator at some point, but for now this will work.
@@ -99,9 +98,9 @@ data PrimTy
 
 data Type
   = PrimTy PrimTy
-  | LabelVec (Vector String)
-  | Lolly Type Type
-  | Tuple (Vector Type)
+  | LabelsTy (Vector String)
+  | LollyTy Type Type
+  | TupleTy (Vector Type)
   deriving (Eq, Show)
 
 data Usage = Inexhaustible | UseOnce | Exhausted
@@ -139,13 +138,13 @@ inferPrimop :: Primop -> Type
 inferPrimop p =
   let nat = PrimTy NatTy
       str = PrimTy StringTy
-      tuple = Tuple . V.fromList
+      tuple = TupleTy . V.fromList
   in case p of
-       Add -> Lolly (tuple [nat, nat]) nat
-       PrintNat -> Lolly nat str
-       ConcatString -> Lolly (tuple [str, str]) str
-       ToUpper -> Lolly str str
-       ToLower -> Lolly str str
+       Add -> LollyTy (tuple [nat, nat]) nat
+       PrintNat -> LollyTy nat str
+       ConcatString -> LollyTy (tuple [str, str]) str
+       ToUpper -> LollyTy str str
+       ToLower -> LollyTy str str
 
 
 allTheSame :: (Eq a) => [a] -> Bool
@@ -159,10 +158,10 @@ infer ctx t = case t of
   App iTm appTm -> do
     (leftovers, iTmTy) <- infer ctx iTm
     case iTmTy of
-      Lolly inTy outTy -> do
+      LollyTy inTy outTy -> do
         leftovers2 <- check leftovers inTy appTm
         return (leftovers2, outTy)
-      _ -> throwError "[infer App] infered non Lolly in LHS of application"
+      _ -> throwError "[infer App] infered non LollyTy in LHS of application"
   Case iTm _branches ty cTms -> do
     (leftovers1, iTmTy) <- infer ctx iTm
 
@@ -180,11 +179,11 @@ infer ctx t = case t of
       "[infer Case] all branches must consume the same linear variables"
 
 --     case iTmTy of
---       LabelVec _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
+--       LabelsTy _label -> assert (iTmTy == ty) "[infer Case] label mismatch"
 --       _ -> throwError "[infer Case] can't case on non-labels"
 --       -- PrimTy _prim -> assert (iTmTy == ty) "[infer Case] primitive mismatch"
---       -- Tuple _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
---       -- Lolly _ _ -> throwError "[infer Case] can't case on function"
+--       -- TupleTy _values -> assert (iTmTy == ty) "[infer Case] tuple mismatch"
+--       -- LollyTy _ _ -> throwError "[infer Case] can't case on function"
 
     return (leftovers2, ty)
 
@@ -195,7 +194,7 @@ infer ctx t = case t of
 check :: Ctx -> Type -> Value -> Either String Ctx
 check ctx ty tm = case tm of
   Lam body -> case ty of
-    Lolly argTy tau -> do
+    LollyTy argTy tau -> do
       let bodyCtx = (argTy, UseOnce):ctx
       (_, usage):leftovers <- check bodyCtx tau body
       assert (usage /= UseOnce) "[check Lam] must consume linear bound variable"
@@ -222,7 +221,7 @@ check ctx ty tm = case tm of
     return leftovers2
   Prd cTms -> case ty of
     -- Thread the leftover context through from left to right.
-    Tuple tys ->
+    TupleTy tys ->
       -- Layer on a state transformer for this bit, since we're passing
       -- leftovers from one term to the next
       let calc = forM (V.zip cTms tys) $ \(tm', ty') -> do
@@ -242,7 +241,7 @@ check ctx ty tm = case tm of
     return ctx
 
   Label name -> case ty of
-    LabelVec names -> do
+    LabelsTy names -> do
       assert (name `V.elem` names)
         "[check Label] didn't find label in label vec"
       return ctx
@@ -330,7 +329,7 @@ openV k x tm = case tm of
 typePattern :: Pattern -> Type -> [Type]
 typePattern (MatchVar _) ty = [ty]
 -- TODO check these line up
-typePattern (MatchTuple subPats) (Tuple subTys) =
+typePattern (MatchTuple subPats) (TupleTy subTys) =
   let zipped = V.zip subPats subTys
   in concatMap (uncurry typePattern) zipped
 typePattern _ _ = error "[typePattern] misaligned pattern"
@@ -349,14 +348,14 @@ swap = Lam (Let
 
 illTyped = Let
   (MatchTuple (V.fromList [MatchVar UseOnce, MatchVar UseOnce]))
-  (Cut (Lam (Neu (BVar 0))) (Lolly (PrimTy NatTy) (PrimTy NatTy)))
+  (Cut (Lam (Neu (BVar 0))) (LollyTy (PrimTy NatTy) (PrimTy NatTy)))
   (Prd (V.fromList [Neu (BVar 0), Neu (BVar 1)]))
 
 diagonal = Lam (Prd (V.fromList [Neu (BVar 0), Neu (BVar 0)]))
 
 caseExample :: Computation
 caseExample = Case
-  (Cut (Label "x") (LabelVec (V.fromList ["x", "y"])))
+  (Cut (Label "x") (LabelsTy (V.fromList ["x", "y"])))
   (V.fromList ["x", "y"])
   (PrimTy NatTy)
   (V.fromList
@@ -381,7 +380,7 @@ main = do
   let swapTy =
         let x = PrimTy StringTy
             y = PrimTy NatTy
-        in Lolly (Tuple (V.fromList [x, y])) (Tuple (V.fromList [y, x]))
+        in LollyTy (TupleTy (V.fromList [x, y])) (TupleTy (V.fromList [y, x]))
   putStrLn "> checking swap"
   putStrLn $ runChecker $ check [] swapTy swap
 
@@ -389,7 +388,7 @@ main = do
   -- but this doesn't -- it duplicates its linear variable
   let diagonalTy =
         let x = PrimTy StringTy
-        in Lolly x (Tuple (V.fromList [x, x]))
+        in LollyTy x (TupleTy (V.fromList [x, x]))
   putStrLn "> checking diagonal (expected failure due to duplicating linear variable)"
   putStrLn $ runChecker $ check [] diagonalTy diagonal
 
