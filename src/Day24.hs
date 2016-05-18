@@ -29,6 +29,7 @@ module Day24 where
 import Control.Lens hiding (Const)
 import Control.Monad.Error.Class
 import Control.Monad.State
+import Data.Char (toUpper, toLower)
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 
@@ -52,6 +53,7 @@ data Computation
 -- checked terms / introductions / values
 data Value
   = Lam Value
+  | Primop Primop
   | Prd (Vector Value)
   | Let Pattern Computation Value
   | Label String
@@ -72,6 +74,17 @@ data Pattern
 data Primitive
   = String String
   | Nat Int
+  deriving Show
+
+-- We should think about a more extensible way to add primops to the language
+-- -- there will probably be a registry mapping from a name to its type and
+-- evaluator at some point, but for now this will work.
+data Primop
+  = Add
+  | PrintNat
+  | ConcatString
+  | ToUpper
+  | ToLower
   deriving Show
 
 data PrimTy
@@ -115,6 +128,19 @@ inferVar ctx k = do
   let (ty, usage) = ctx !! k
   usage' <- useVar usage
   return (ctx & ix k . _2 .~ usage', ty)
+
+-- Type inference for primops is entirely non-dependent on the environment.
+inferPrimop :: Primop -> Type
+inferPrimop p =
+  let nat = PrimTy NatTy
+      str = PrimTy StringTy
+      tuple = Tuple . V.fromList
+  in case p of
+       Add -> Lolly (tuple [nat, nat]) nat
+       PrintNat -> Lolly nat str
+       ConcatString -> Lolly (tuple [str, str]) str
+       ToUpper -> Lolly str str
+       ToLower -> Lolly str str
 
 allTheSame :: (Eq a) => [a] -> Bool
 allTheSame [] = True
@@ -169,6 +195,11 @@ check ctx ty tm = case tm of
       assert (usage /= UseOnce) "[check Lam] must consume linear bound variable"
       return leftovers
     _ -> throwError "[check Lam] checking lambda against non-lolly type"
+  Primop p -> do
+    let expectedTy = inferPrimop p
+    assert (ty == expectedTy) $
+      "[check Primop] primop (" ++ show p ++ ") type mismatch"
+    return ctx
   Let pattern letTm cTm -> do
     (leftovers, tmTy) <- infer ctx letTm
     let patternTy = typePattern pattern tmTy
@@ -225,6 +256,9 @@ evalC env tm = case tm of
         cTm' = evalV env cTm
     in case iTm' of
          Lam cBody -> evalV (cTm':env) cBody
+         -- Note that we're passing in only the current heap value, not the
+         -- context, since a primop must be atomic -- it can't capture
+         Primop p -> evalPrimop p cTm'
          _ -> error "unexpected non lambda in lhs of function application"
   Case iTm labels _ty cTms ->
     let iTm' = evalC env iTm
@@ -242,15 +276,42 @@ evalC env tm = case tm of
          _ -> error "[evalC Case] unmatchable"
   Cut cTm _ty -> evalV env cTm
 
+
+evalPrimop :: Primop -> Value -> Value
+evalPrimop Add (Prd args)
+  | [Primitive (Nat x), Primitive (Nat y)] <- V.toList args
+  = nat (x + y)
+evalPrimop PrintNat (Primitive (Nat i)) = Primitive (String (show i))
+evalPrimop ConcatString (Prd args)
+  | [Primitive (String l), Primitive (String r)] <- V.toList args
+  = str (l ++ r)
+evalPrimop ToUpper (Primitive (String s)) = Primitive (String (map toUpper s))
+evalPrimop ToLower (Primitive (String s)) = Primitive (String (map toLower s))
+evalPrimop _ _ = error "unexpected arguments to evalPrimop"
+
+
+
+nat :: Int -> Value
+nat = Primitive . Nat
+
+str :: String -> Value
+str = Primitive . String
+
+tuple :: [Value] -> Value
+tuple = Prd . V.fromList
+
 evalV :: [Value] -> Value -> Value
 evalV env tm = case tm of
   Prd cTms -> Prd (V.map (evalV env) cTms)
   Let _pat iTm cTm -> evalV (evalC env iTm:env) cTm
+  Primop _ -> tm
   Lam _ -> tm
   Primitive _ -> tm
   Label _ -> tm
   Neu _ -> tm
 
+-- TODO we don't actually use the implementation of opening -- I had just
+-- pre-emptively defined it thinking it would be used.
 openC :: Int -> String -> Computation -> Computation
 openC k x tm = case tm of
   BVar i -> if i == k then FVar x else tm
@@ -269,6 +330,7 @@ openV k x tm = case tm of
     in Let pat (openC k x iTm) (openV (k + bindingSize) x cTm)
   Label _ -> tm
   Primitive _ -> tm
+  Primop _ -> tm
   Neu iTm -> Neu (openC k x iTm)
 
 typePattern :: Pattern -> Type -> [Type]
@@ -299,7 +361,6 @@ illTyped = Let
 diagonal = Lam (Prd (V.fromList [Neu (BVar 0), Neu (BVar 0)]))
 
 caseExample :: Computation
-
 caseExample = Case
   (Cut (Label "x") (LabelVec (V.fromList ["x", "y"])))
   (V.fromList ["x", "y"])
@@ -312,6 +373,11 @@ caseExample = Case
 
 caseExample' :: Value
 caseExample' = Neu caseExample
+
+primopExample :: Computation
+primopExample =
+  let concat = ConcatString
+  in App (Cut (Primop concat) (inferPrimop concat)) (tuple [str "abc", str "xyz"])
 
 main :: IO ()
 main = do
@@ -334,3 +400,7 @@ main = do
   putStrLn "> checking case"
   putStrLn $ runChecker $ check [] (PrimTy NatTy) caseExample'
   print $ evalC [] caseExample
+
+  putStrLn "> checking primop"
+  putStrLn $ runChecker $ check [] (PrimTy StringTy) (Neu primopExample)
+  print $ evalC [] primopExample
