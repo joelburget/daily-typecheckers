@@ -1,6 +1,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE PatternSynonyms #-}
 module Day24 where
 
 -- Significant features of this treatment include:
@@ -76,6 +77,10 @@ data Primitive
   | Nat Int
   deriving Show
 
+pattern NatV i = Primitive (Nat i)
+pattern StrV s = Primitive (String s)
+
+
 -- We should think about a more extensible way to add primops to the language
 -- -- there will probably be a registry mapping from a name to its type and
 -- evaluator at some point, but for now this will work.
@@ -142,6 +147,7 @@ inferPrimop p =
        ToUpper -> Lolly str str
        ToLower -> Lolly str str
 
+
 allTheSame :: (Eq a) => [a] -> Bool
 allTheSame [] = True
 allTheSame (x:xs) = and $ map (== x) xs
@@ -200,9 +206,9 @@ check ctx ty tm = case tm of
     assert (ty == expectedTy) $
       "[check Primop] primop (" ++ show p ++ ") type mismatch"
     return ctx
-  Let pattern letTm cTm -> do
+  Let pat letTm cTm -> do
     (leftovers, tmTy) <- infer ctx letTm
-    let patternTy = typePattern pattern tmTy
+    let patternTy = typePattern pat tmTy
     -- XXX do we need to reverse these?
     let freshVars = map (, UseOnce) patternTy
         bodyCtx = freshVars ++ leftovers
@@ -276,29 +282,17 @@ evalC env tm = case tm of
          _ -> error "[evalC Case] unmatchable"
   Cut cTm _ty -> evalV env cTm
 
-
 evalPrimop :: Primop -> Value -> Value
 evalPrimop Add (Prd args)
-  | [Primitive (Nat x), Primitive (Nat y)] <- V.toList args
-  = nat (x + y)
-evalPrimop PrintNat (Primitive (Nat i)) = Primitive (String (show i))
+  | [NatV x, NatV y] <- V.toList args
+  = NatV (x + y)
+evalPrimop PrintNat (NatV i) = StrV (show i)
 evalPrimop ConcatString (Prd args)
-  | [Primitive (String l), Primitive (String r)] <- V.toList args
-  = str (l ++ r)
-evalPrimop ToUpper (Primitive (String s)) = Primitive (String (map toUpper s))
-evalPrimop ToLower (Primitive (String s)) = Primitive (String (map toLower s))
+  | [StrV l, StrV r] <- V.toList args
+  = StrV (l ++ r)
+evalPrimop ToUpper (StrV s) = StrV (map toUpper s)
+evalPrimop ToLower (StrV s) = StrV (map toLower s)
 evalPrimop _ _ = error "unexpected arguments to evalPrimop"
-
-
-
-nat :: Int -> Value
-nat = Primitive . Nat
-
-str :: String -> Value
-str = Primitive . String
-
-tuple :: [Value] -> Value
-tuple = Prd . V.fromList
 
 evalV :: [Value] -> Value -> Value
 evalV env tm = case tm of
@@ -376,8 +370,10 @@ caseExample' = Neu caseExample
 
 primopExample :: Computation
 primopExample =
-  let concat = ConcatString
-  in App (Cut (Primop concat) (inferPrimop concat)) (tuple [str "abc", str "xyz"])
+  let pair :: Value -> Value -> Value
+      pair x y = Prd (V.fromList [x, y])
+  in App (Cut (Primop ConcatString) (inferPrimop ConcatString))
+         (pair (StrV "abc") (StrV "xyz"))
 
 main :: IO ()
 main = do
