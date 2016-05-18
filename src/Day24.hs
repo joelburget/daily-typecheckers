@@ -34,10 +34,10 @@ import qualified Data.Vector as V
 
 
 -- infered terms / eliminations / neutral terms
-data Infer
+data Computation
   = BVar Int
   | FVar String
-  | App Infer Check
+  | App Computation Value
   -- questions arise re the eliminator for tuples
   -- * is it case, or was case just the eliminator for sums?
   -- * is let a suitable eliminator? but let's a checked term, not infered
@@ -45,18 +45,18 @@ data Infer
   --   cases branch (justifying no infered term for eliminating tuples).
   --
   -- ... actually we need case or there is no branching!
-  | Case Infer (Vector String) Type (Vector Check)
-  | Cut Check Type
+  | Case Computation (Vector String) Type (Vector Value)
+  | Cut Value Type
   deriving Show
 
 -- checked terms / introductions / values
-data Check
-  = Lam Check
-  | Prd (Vector Check)
-  | Let Pattern Infer Check
+data Value
+  = Lam Value
+  | Prd (Vector Value)
+  | Let Pattern Computation Value
   | Label String
   | Primitive Primitive
-  | Neu Infer
+  | Neu Computation
   deriving Show
 
 -- Match nested n-tuples.
@@ -120,7 +120,7 @@ allTheSame :: (Eq a) => [a] -> Bool
 allTheSame [] = True
 allTheSame ( x:xs ) = and $ map (== x) xs
 
-infer :: Ctx -> Infer -> Either String (Ctx, Type)
+infer :: Ctx -> Computation -> Either String (Ctx, Type)
 infer ctx t = case t of
   BVar i -> inferVar ctx i
   FVar _name -> throwError "[infer FVar] found unexpected free variable"
@@ -160,7 +160,7 @@ infer ctx t = case t of
     leftovers <- check ctx ty cTm
     return (leftovers, ty)
 
-check :: Ctx -> Type -> Check -> Either String Ctx
+check :: Ctx -> Type -> Value -> Either String Ctx
 check ctx ty tm = case tm of
   Lam body -> case ty of
     Lolly argTy tau -> do
@@ -216,60 +216,60 @@ check ctx ty tm = case tm of
     assert (iTmTy == ty) "[check Neu] checking infered neutral type"
     return leftovers
 
-openI :: Int -> String -> Infer -> Infer
-openI k x tm = case tm of
-  BVar i -> if i == k then FVar x else tm
-  FVar _ -> tm
-  App iTm cTm -> App (openI k x iTm) (openC k x cTm)
-  Case iTm labels ty cTms ->
-    Case (openI k x iTm) labels ty (V.map (openC (k + 1) x) cTms)
-  Cut cTm ty -> Cut (openC k x cTm) ty
-
-evalI :: [Check] -> Infer -> Check
-evalI env tm = case tm of
+evalC :: [Value] -> Computation -> Value
+evalC env tm = case tm of
   BVar i -> env !! i
   FVar name -> error ("unexpected free var in evaluation: " ++ name)
   App iTm cTm ->
-    let iTm' = evalI env iTm
-        cTm' = evalC env cTm
+    let iTm' = evalC env iTm
+        cTm' = evalV env cTm
     in case iTm' of
-         Lam cBody -> evalC (cTm':env) cBody
+         Lam cBody -> evalV (cTm':env) cBody
          _ -> error "unexpected non lambda in lhs of function application"
   Case iTm labels _ty cTms ->
-    let iTm' = evalI env iTm
+    let iTm' = evalC env iTm
     in case iTm' of
          Label l ->
            let findBranch = do
                  branchIx <- V.elemIndex l labels
                  cTms V.!? branchIx
            in case findBranch of
-                Just branch -> evalC (iTm':env) branch
-                _ -> error "[evalI Case] couldn't find branch"
+                Just branch -> evalV (iTm':env) branch
+                _ -> error "[evalC Case] couldn't find branch"
          Primitive _p -> undefined
          Prd _p -> undefined
          Neu _iTm -> undefined
-         _ -> error "[evalI Case] unmatchable"
-  Cut cTm _ty -> evalC env cTm
+         _ -> error "[evalC Case] unmatchable"
+  Cut cTm _ty -> evalV env cTm
 
-evalC :: [Check] -> Check -> Check
-evalC env tm = case tm of
-  Prd cTms -> Prd (V.map (evalC env) cTms)
-  Let _pat iTm cTm -> evalC (evalI env iTm:env) cTm
+evalV :: [Value] -> Value -> Value
+evalV env tm = case tm of
+  Prd cTms -> Prd (V.map (evalV env) cTms)
+  Let _pat iTm cTm -> evalV (evalC env iTm:env) cTm
   Lam _ -> tm
   Primitive _ -> tm
   Label _ -> tm
   Neu _ -> tm
 
-openC :: Int -> String -> Check -> Check
+openC :: Int -> String -> Computation -> Computation
 openC k x tm = case tm of
-  Lam cTm -> Lam (openC (k + 1) x cTm)
-  Prd cTms -> Prd (V.map (openC k x) cTms)
+  BVar i -> if i == k then FVar x else tm
+  FVar _ -> tm
+  App iTm cTm -> App (openC k x iTm) (openV k x cTm)
+  Case iTm labels ty cTms ->
+    Case (openC k x iTm) labels ty (V.map (openV (k + 1) x) cTms)
+  Cut cTm ty -> Cut (openV k x cTm) ty
+
+openV :: Int -> String -> Value -> Value
+openV k x tm = case tm of
+  Lam cTm -> Lam (openV (k + 1) x cTm)
+  Prd cTms -> Prd (V.map (openV k x) cTms)
   Let pat iTm cTm ->
     let bindingSize = patternSize pat
-    in Let pat (openI k x iTm) (openC (k + bindingSize) x cTm)
+    in Let pat (openC k x iTm) (openV (k + bindingSize) x cTm)
   Label _ -> tm
   Primitive _ -> tm
-  Neu iTm -> Neu (openI k x iTm)
+  Neu iTm -> Neu (openC k x iTm)
 
 typePattern :: Pattern -> Type -> [Type]
 typePattern (MatchVar _) ty = [ty]
@@ -283,7 +283,7 @@ patternSize :: Pattern -> Int
 patternSize (MatchVar _0) = 1
 patternSize (MatchTuple subPats) = sum (V.map patternSize subPats)
 
-swap, illTyped, diagonal :: Check
+swap, illTyped, diagonal :: Value
 
 swap = Lam (Let
   (MatchTuple (V.fromList [MatchVar UseOnce, MatchVar UseOnce]))
@@ -298,7 +298,7 @@ illTyped = Let
 
 diagonal = Lam (Prd (V.fromList [Neu (BVar 0), Neu (BVar 0)]))
 
-caseExample :: Infer
+caseExample :: Computation
 
 caseExample = Case
   (Cut (Label "x") (LabelVec (V.fromList ["x", "y"])))
@@ -310,7 +310,7 @@ caseExample = Case
     ]
   )
 
-caseExample' :: Check
+caseExample' :: Value
 caseExample' = Neu caseExample
 
 main :: IO ()
@@ -333,4 +333,4 @@ main = do
 
   putStrLn "> checking case"
   putStrLn $ runChecker $ check [] (PrimTy NatTy) caseExample'
-  print $ evalI [] caseExample
+  print $ evalC [] caseExample
