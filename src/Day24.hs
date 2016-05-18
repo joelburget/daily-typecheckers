@@ -118,7 +118,7 @@ inferVar ctx k = do
 
 allTheSame :: (Eq a) => [a] -> Bool
 allTheSame [] = True
-allTheSame ( x:xs ) = and $ map (== x) xs
+allTheSame (x:xs) = and $ map (== x) xs
 
 infer :: Ctx -> Computation -> Either String (Ctx, Type)
 infer ctx t = case t of
