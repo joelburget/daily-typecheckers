@@ -95,57 +95,36 @@ instance Show InferNom where
     NApp t1 t2 -> showParen (p >= 10) $
       showsPrec 10 t1 . showString " " . showsPrec 10 t2
 
-type ReflectM = Reader [Hoas]
 
 type CheckInferM = EitherT String (Reader [Type])
+type ReflectM = Reader [Hoas]
 type ReifyM = GenT Int (EitherT String Identity)
 
 
-runReify :: Hoas -> Either String String
-runReify hoas =
-  let l = show <$> reifyC hoas
-      r = show <$> reifyI hoas
-      runIt = runIdentity . runEitherT . runGenT
-  in runIt l <|> runIt r
+runReify :: Hoas -> String
+runReify =
+  let runIt = runIdentity . runEitherT . runGenT
+  in either show show . runIt . reify
 
-reifyI :: Hoas -> ReifyM InferNom
-reifyI t = case t of
-  HApp iTm cTm -> NApp <$> reifyI iTm <*> reifyC cTm
-  HAnnot cTm ty -> NAnnot <$> reifyC cTm <*> pure ty
+reify :: Hoas -> ReifyM (Either InferNom CheckNom)
+reify t = case t of
+  HApp iTm cTm -> NApp <$> reify iTm <*> reify cTm
+  HAnnot cTm ty -> NAnnot <$> reify cTm <*> pure ty
   HVar name i -> pure $ NVar name i
-  _ ->
-    let tagName = case t of
-          HNeutral _ -> "HNeutral"
-          HAbs name _ -> "HAbs " ++ name
-          HLet name _ _ _ -> "HLet " ++ name
-          HUnique _ -> "HUnique"
-          _ -> "XXX"
-    in throwError $
-         "[reifyI] unexpectedly called with a checked term (" ++ tagName ++ ")"
-
-reifyC :: Hoas -> ReifyM CheckNom
-reifyC t = case t of
-  HNeutral h -> NNeutral <$> reifyI h
+  HNeutral h -> NNeutral <$> reify h
   HLet name iTm ty cTm -> do
     unique <- gen
-    iTm' <- reifyI iTm
-    cTm' <- reifyC (cTm (HUnique unique))
+    iTm' <- reify iTm
+    cTm' <- reify (cTm (HUnique unique))
     return $ NLet name iTm' ty cTm'
   HAbs name f -> do
     unique <- gen
-    body <- reifyC (f (HUnique unique))
+    body <- reify (f (HUnique unique))
     return $ NAbs name body
-  _ ->
-    let tagName = case t of
-          HAnnot _ _ -> "HAnnot"
-          HVar name _ -> "HVar " ++ name
-          HApp _ _ -> "HApp"
-          HUnique _ -> "HUnique"
-          _ -> "XXX"
-    in throwError $
-         "[reifyC] unexpectedly called with an infered term (" ++
-         tagName ++
-         ")"
+  HUnique _ -> throwError "[reify] unexpectedly called with HUnique"
+  -- where expectI :: Either InferNom CheckNom -> InferNom
+  --       expectI (Left i) = i
+  --       expectI (Right c) = error "[reify] unexpectedly found checked term"
 
 
 runReflectM :: InferNom -> Hoas
@@ -226,17 +205,14 @@ eval t = case t of
   HAbs _name _f -> return t
 
 runHoas :: Hoas -> String
-runHoas hoas = either id id (eval hoas >>= runReify)
-
-showHoas :: Hoas -> String
-showHoas = either id id . runReify
+runHoas = either id runReify . eval
 
 runNeut :: InferNom -> String
 runNeut = runHoas . runReflectM
 
 testHoas :: Hoas -> IO ()
 testHoas hoas = do
-  putStrLn $ "> " ++ showHoas hoas
+  putStrLn $ "> " ++ runReify hoas
   putStrLn (runHoas hoas)
 
 testNeut :: InferNom -> IO ()
