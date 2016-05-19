@@ -131,6 +131,7 @@ inferVar ctx k = do
   -- find the type, count this as a usage
   let (ty, usage) = ctx !! k
   usage' <- useVar usage
+  -- TODO(joel) this is the only line that uses lens -- remove it?
   return (ctx & ix k . _2 .~ usage', ty)
 
 -- Type inference for primops is entirely non-dependent on the environment.
